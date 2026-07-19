@@ -4,6 +4,11 @@ import type { CreateTaskInput, ProxyRouteDefinition, TaskRecord, WorkflowDefinit
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 const DEFAULT_AGENT_PROFILE_COUNT = 3;
+const HOUR_MS = 3_600_000;
+const QUICK_STAGGER_MIN_MS = 10_000;
+const QUICK_STAGGER_MAX_MS = 45_000;
+const SLOT_RANDOM_MIN = 0.12;
+const SLOT_RANDOM_MAX = 0.88;
 
 type Store = ReturnType<typeof openDatabase>;
 
@@ -99,10 +104,10 @@ export function createDispatchScheduler(store: Store, io: Server) {
 }
 
 /**
- * Builds a diurnal-shaped list of scheduled timestamps.
- * Execution density follows a cosine wave peaking at mid-afternoon (14:00)
- * within the configured active-hours window. Any slot that falls outside the
- * window is rolled into the next active day automatically.
+ * Builds a randomized, even schedule across the requested wall-clock period.
+ * The scheduler first finds all allowed active-hour intervals, then samples one
+ * randomized timestamp per evenly sized slot. That keeps work spread across the
+ * full period without collapsing inactive-hour tasks onto the next window start.
  */
 function buildDiurnalSchedule(
   nowMs: number,
@@ -113,53 +118,155 @@ function buildDiurnalSchedule(
 ): number[] {
   if (count <= 0) return [];
 
-  const totalMs = totalHours * 3_600_000;
-  const scheduleStart = clampToActiveWindow(nowMs, activeStart, activeEnd);
-  const spacingMs = count <= 1 ? 0 : totalMs / (count - 1);
-
-  // Generate a gentle diurnal curve by nudging slots around their linear position.
-  const weights = Array.from({ length: count }, (_, i) => {
-    const t = count === 1 ? 0.5 : i / (count - 1);
-    const cosVal = Math.cos((t - 0.6) * Math.PI * 1.2);
-    return 0.3 + 0.7 * Math.max(0, cosVal);
-  });
-  const averageWeight = weights.reduce((a, b) => a + b, 0) / weights.length;
-
-  const times: number[] = [];
-
-  for (let i = 0; i < count; i++) {
-    const linearOffsetMs = count === 1 ? 0 : i * spacingMs;
-    const densityNudgeMs = spacingMs > 0 ? (averageWeight - weights[i]) * spacingMs * 0.25 : 0;
-    const jitterMs = spacingMs > 0 && i > 0 && i < count - 1 ? randomJitterMs(spacingMs * 0.2) : 0;
-    const offsetMs = clamp(linearOffsetMs + densityNudgeMs + jitterMs, 0, totalMs);
-
-    times.push(clampToActiveWindow(scheduleStart + offsetMs, activeStart, activeEnd));
+  const scheduleStart = nextActiveTimestamp(nowMs, activeStart, activeEnd);
+  if (count === 1 || totalHours <= 0) {
+    return buildQuickStaggeredSchedule(scheduleStart, count, activeStart, activeEnd);
   }
 
-  return times.sort((a, b) => a - b);
+  const scheduleEnd = scheduleStart + totalHours * HOUR_MS;
+  const intervals = buildActiveIntervals(scheduleStart, scheduleEnd, activeStart, activeEnd);
+  const availableMs = intervals.reduce((sum, interval) => sum + interval.end - interval.start, 0);
+
+  if (availableMs <= 0) {
+    return buildQuickStaggeredSchedule(scheduleStart, count, activeStart, activeEnd);
+  }
+
+  const slotMs = availableMs / count;
+  const offsets = Array.from({ length: count }, (_, i) => {
+    const slotStart = i * slotMs;
+    const randomPoint = SLOT_RANDOM_MIN + Math.random() * (SLOT_RANDOM_MAX - SLOT_RANDOM_MIN);
+    return Math.floor(slotStart + slotMs * randomPoint);
+  });
+
+  return offsets.map((offsetMs) => activeOffsetToTimestamp(intervals, offsetMs)).sort((a, b) => a - b);
 }
 
-/** Ensures a timestamp falls within the active hours window; rolls to next day if outside. */
-function clampToActiveWindow(
-  timestampMs: number,
+function buildQuickStaggeredSchedule(
+  startMs: number,
+  count: number,
   activeStart: number,
   activeEnd: number
-): number {
-  let t = new Date(timestampMs);
-  for (let day = 0; day < 8; day++) {
-    const h = t.getHours() + t.getMinutes() / 60;
-    if (h >= activeStart && h < activeEnd) {
-      return t.getTime();
-    }
-    // Push to start of next active window
-    const next = new Date(t);
-    if (h >= activeEnd) {
-      // Already past today's window – advance to tomorrow's start
-      next.setDate(next.getDate() + 1);
-    }
-    next.setHours(activeStart, randomInt(0, 15), randomInt(0, 59), 0);
-    t = next;
+) {
+  const times: number[] = [];
+  let cursor = startMs;
+
+  for (let i = 0; i < count; i++) {
+    cursor = nextActiveTimestamp(cursor, activeStart, activeEnd);
+    times.push(cursor);
+    cursor += randomInt(QUICK_STAGGER_MIN_MS, QUICK_STAGGER_MAX_MS);
   }
+
+  return times;
+}
+
+function buildActiveIntervals(
+  startMs: number,
+  endMs: number,
+  activeStart: number,
+  activeEnd: number
+) {
+  const intervals: Array<{ start: number; end: number }> = [];
+  let cursor = startMs;
+  const maxIterations = Math.max(2, Math.ceil((endMs - startMs) / HOUR_MS) + 48);
+
+  for (let i = 0; i < maxIterations && cursor < endMs; i++) {
+    const intervalStart = nextActiveTimestamp(cursor, activeStart, activeEnd);
+    if (intervalStart >= endMs) break;
+
+    const intervalEnd = Math.min(activeWindowEnd(intervalStart, activeStart, activeEnd), endMs);
+    if (intervalEnd > intervalStart) {
+      intervals.push({ start: intervalStart, end: intervalEnd });
+    }
+
+    cursor = Math.max(intervalEnd + 1, cursor + 1);
+  }
+
+  return intervals;
+}
+
+function activeOffsetToTimestamp(intervals: Array<{ start: number; end: number }>, offsetMs: number) {
+  let remaining = offsetMs;
+
+  for (const interval of intervals) {
+    const duration = interval.end - interval.start;
+    if (remaining < duration) {
+      return interval.start + remaining;
+    }
+    remaining -= duration;
+  }
+
+  return intervals[intervals.length - 1].end - 1;
+}
+
+function nextActiveTimestamp(timestampMs: number, activeStart: number, activeEnd: number): number {
+  if (isAlwaysActive(activeStart, activeEnd) || isWithinActiveWindow(timestampMs, activeStart, activeEnd)) {
+    return timestampMs;
+  }
+
+  const t = new Date(timestampMs);
+  const hour = localDecimalHour(t);
+
+  if (activeStart < activeEnd) {
+    if (hour < activeStart) {
+      return localHourTimestamp(t, activeStart);
+    }
+    const tomorrow = new Date(t);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return localHourTimestamp(tomorrow, activeStart);
+  }
+
+  // Overnight window, for example 22 -> 6. If the time is outside the window,
+  // it is between end and start, so today's start is next.
+  return localHourTimestamp(t, activeStart);
+}
+
+function activeWindowEnd(timestampMs: number, activeStart: number, activeEnd: number): number {
+  if (isAlwaysActive(activeStart, activeEnd)) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const t = new Date(timestampMs);
+  const hour = localDecimalHour(t);
+
+  if (activeStart < activeEnd) {
+    return localHourTimestamp(t, activeEnd);
+  }
+
+  if (hour >= activeStart) {
+    const tomorrow = new Date(t);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return localHourTimestamp(tomorrow, activeEnd);
+  }
+
+  return localHourTimestamp(t, activeEnd);
+}
+
+function isWithinActiveWindow(timestampMs: number, activeStart: number, activeEnd: number) {
+  if (isAlwaysActive(activeStart, activeEnd)) return true;
+
+  const hour = localDecimalHour(new Date(timestampMs));
+  return activeStart < activeEnd
+    ? hour >= activeStart && hour < activeEnd
+    : hour >= activeStart || hour < activeEnd;
+}
+
+function isAlwaysActive(activeStart: number, activeEnd: number) {
+  return activeStart === activeEnd || (activeStart === 0 && activeEnd === 24);
+}
+
+function localDecimalHour(date: Date) {
+  return date.getHours() + date.getMinutes() / 60 + date.getSeconds() / 3600 + date.getMilliseconds() / HOUR_MS;
+}
+
+function localHourTimestamp(base: Date, hour: number) {
+  const t = new Date(base);
+  t.setMinutes(0, 0, 0);
+  if (hour === 24) {
+    t.setHours(0);
+    t.setDate(t.getDate() + 1);
+    return t.getTime();
+  }
+  t.setHours(hour);
   return t.getTime();
 }
 
@@ -235,16 +342,6 @@ function parseEnvProxyRoutes(): ProxyRouteDefinition[] {
   }
 }
 
-function randomJitterMs(base: number): number {
-  // ±20% of base interval
-  const window = base * 0.2;
-  return Math.floor(-window + Math.random() * window * 2);
-}
-
 function randomInt(min: number, max: number): number {
   return Math.floor(min + Math.random() * (max - min + 1));
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
 }

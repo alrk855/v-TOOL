@@ -57,7 +57,7 @@ npm run dev:dashboard   # Terminal 1
 npm run dev:runner      # Terminal 2
 ```
 
-Open `http://localhost:3000`
+Open `http://localhost:3000`, or `http://localhost:<DASHBOARD_PORT>` if you changed the port.
 
 ---
 
@@ -168,10 +168,11 @@ Copy `.env.example` to `.env` and fill in your values.
 
 | Variable | Default | Description |
 |---|---|---|
-| `DASHBOARD_PORT` | `3000` | Port the dashboard listens on |
+| `DASHBOARD_PORT` | `3000` | Browser-facing host port in Docker Compose. The dashboard container still listens on internal port `3000`. |
 | `DATABASE_PATH` | `/app/data/telemetry.sqlite` | SQLite file path (mounted volume in Docker) |
 | `TZ` | `Europe/Skopje` | Local timezone used by Docker services for active-hours scheduling |
-| `DASHBOARD_API_BASE` | `http://dashboard-service:3000` | URL the runner uses to reach the dashboard |
+| `RUNNER_DASHBOARD_API_BASE` | `http://dashboard-service:3000` | Advanced Docker override for runner -> dashboard traffic. Do not use the host-mapped port here. |
+| `DASHBOARD_API_BASE` | `http://localhost:3000` | URL the runner uses when running the runner outside Docker |
 | `RUNNER_API_TOKEN` | _(none)_ | Shared bearer token used by the runner for protected internal dashboard APIs |
 | `RUNNER_CONCURRENCY` | `4` | Max simultaneous browser threads |
 | `RUNNER_POLL_INTERVAL_MS` | `2500` | How often the runner checks for new tasks (ms) |
@@ -249,7 +250,7 @@ When proxies are configured:
 
 ## Dashboard Quick Start
 
-1. Open `http://localhost:3000`
+1. Open `http://localhost:3000`, or `http://localhost:<DASHBOARD_PORT>` if you changed the Docker host port
 2. Fill in **Target URL** and **Total executions**
 3. (Optional) Add proxy routes in the **Proxy Pool** tab
 4. (Optional) Configure CSS selectors in the **Workflow Selectors** tab

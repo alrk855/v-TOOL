@@ -12,8 +12,14 @@ const $  = (id) => document.getElementById(id);
 const form          = $("taskForm");
 const formMessage   = $("formMessage");
 const socketStatus  = $("socketStatus");
-const taskRows      = $("taskRows");
 const taskCount     = $("taskCount");
+const taskStatusSummary = $("taskStatusSummary");
+const activeTaskPreview = $("activeTaskPreview");
+const taskModal = $("taskModal");
+const openTaskCenterBtn = $("openTaskCenterBtn");
+const closeTaskCenterBtn = $("closeTaskCenterBtn");
+const taskModalCount = $("taskModalCount");
+const taskGroupList = $("taskGroupList");
 const logsEl        = $("logs");
 const proxyPoolRows = $("proxyPoolRows");
 const addProxyBtn   = $("addProxyBtn");
@@ -21,7 +27,22 @@ const saveBtn       = $("saveSettingsBtn");
 const clearLogsBtn  = $("clearLogsBtn");
 const launchChromeBtn = $("launchChromeBtn");
 const cancelPendingBtn = $("cancelPendingBtn");
+const cancelPendingInModalBtn = $("cancelPendingInModalBtn");
 const logoutBtn = $("logoutBtn");
+
+const TASK_STATUSES = ["pending", "queued", "running", "completed", "failed", "cancelled"];
+const ACTIVE_STATUSES = ["pending", "queued", "running"];
+const TASK_FILTER_LABELS = {
+  active: "Active",
+  pending: "Pending",
+  queued: "Queued",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  all: "All"
+};
+let currentTaskFilter = "active";
 
 // ── Tabs ──────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -253,31 +274,208 @@ form.querySelectorAll("input").forEach((inp) => {
 
 // ── Rendering ─────────────────────────────────
 function renderTasks() {
-  const sorted = Array.from(tasks.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  taskCount.textContent = `${sorted.length} task${sorted.length !== 1 ? "s" : ""}`;
-  taskRows.innerHTML = sorted.slice(0, 200).map((task) => {
-    const done = task.completedExecutions + task.failedExecutions;
-    const pct  = task.totalExecutions > 0 ? Math.round((done / task.totalExecutions) * 100) : 0;
-    const canCancel = task.status === "pending" || task.status === "queued";
-    return `
-      <tr>
-        <td><code style="font-size:11px;color:#6366f1">${task.id.slice(0, 8)}</code></td>
-        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(task.targetUrl)}</td>
-        <td><span class="status-badge s-${task.status}">${task.status}</span></td>
-        <td style="white-space:nowrap">${task.scheduledAt ? fmtTime(task.scheduledAt) : "Immediate"}</td>
-        <td>
-          <div style="display:flex;align-items:center;gap:8px">
-            <div style="width:60px;height:3px;background:rgba(255,255,255,0.07);border-radius:99px">
-              <div style="width:${pct}%;height:3px;border-radius:99px;background:linear-gradient(90deg,#6366f1,#06b6d4);transition:width .4s"></div>
-            </div>
-            <span style="font-size:11px;color:var(--text-muted)">${done}/${task.totalExecutions}</span>
-          </div>
-        </td>
-        <td><code style="font-size:11px">${esc(task.proxyRouteId ?? "—")}</code></td>
-        <td style="white-space:nowrap;color:var(--text-muted)">${fmtTime(task.updatedAt)}</td>
-        <td>${canCancel ? `<button type="button" class="btn-danger-small" data-cancel-task="${esc(task.id)}">Cancel</button>` : `<span class="muted-text">—</span>`}</td>
-      </tr>`;
-  }).join("");
+  const allTasks = sortTasksForDisplay(Array.from(tasks.values()));
+  const counts = countTasksByStatus(allTasks);
+  const activeTasks = allTasks.filter((task) => ACTIVE_STATUSES.includes(task.status));
+
+  taskCount.textContent = `${activeTasks.length} active / ${allTasks.length} loaded`;
+  renderTaskStatusSummary(counts, allTasks.length);
+  renderActiveTaskPreview(activeTasks);
+  renderTaskCenter(allTasks, counts);
+}
+
+function renderTaskStatusSummary(counts, total) {
+  const cards = [
+    { filter: "active", label: "Active", value: ACTIVE_STATUSES.reduce((sum, status) => sum + (counts[status] ?? 0), 0), note: "pending + queue + running" },
+    { filter: "pending", label: "Pending", value: counts.pending ?? 0, note: "waiting for schedule" },
+    { filter: "queued", label: "Queued", value: counts.queued ?? 0, note: "ready for runner" },
+    { filter: "running", label: "Running", value: counts.running ?? 0, note: "in progress" },
+    { filter: "completed", label: "Completed", value: counts.completed ?? 0, note: "finished" },
+    { filter: "failed", label: "Failed", value: counts.failed ?? 0, note: "needs review" },
+    { filter: "cancelled", label: "Cancelled", value: counts.cancelled ?? 0, note: "dismissed from main" },
+    { filter: "all", label: "All", value: total, note: "loaded tasks" }
+  ];
+
+  taskStatusSummary.innerHTML = cards.map((card) => `
+    <button type="button" class="task-status-card task-filter-${card.filter}" data-task-filter="${card.filter}">
+      <span class="task-status-value">${card.value}</span>
+      <span class="task-status-label">${esc(card.label)}</span>
+      <span class="task-status-note">${esc(card.note)}</span>
+    </button>
+  `).join("");
+}
+
+function renderActiveTaskPreview(activeTasks) {
+  const nextTasks = activeTasks.slice(0, 8);
+  if (!nextTasks.length) {
+    activeTaskPreview.innerHTML = `
+      <div class="task-empty-state">
+        <strong>No active queue</strong>
+        <span>Pending, queued, and running tasks will appear here.</span>
+      </div>
+    `;
+    return;
+  }
+
+  activeTaskPreview.innerHTML = `
+    <div class="task-preview-header">
+      <span>Next active tasks</span>
+      <span>${nextTasks.length} shown</span>
+    </div>
+    <div class="task-preview-list">
+      ${nextTasks.map(renderTaskPreviewRow).join("")}
+    </div>
+  `;
+}
+
+function renderTaskPreviewRow(task) {
+  return `
+    <article class="task-preview-row">
+      <div class="task-preview-id">
+        <code>${esc(task.id.slice(0, 8))}</code>
+        <span class="status-badge s-${task.status}">${esc(task.status)}</span>
+      </div>
+      <div class="task-preview-target" title="${esc(task.targetUrl)}">${esc(task.targetUrl)}</div>
+      <div class="task-preview-meta">
+        <span>${task.scheduledAt ? fmtTime(task.scheduledAt) : "Immediate"}</span>
+        <span>${esc(task.proxyRouteId ?? "no proxy")}</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderTaskCenter(allTasks, counts) {
+  const filtered = filterTasks(allTasks, currentTaskFilter);
+  const label = TASK_FILTER_LABELS[currentTaskFilter] ?? "Tasks";
+  taskModalCount.textContent = `${label}: ${filtered.length} task${filtered.length !== 1 ? "s" : ""}`;
+  updateTaskFilterButtons(counts, allTasks.length);
+
+  if (!filtered.length) {
+    taskGroupList.innerHTML = `
+      <div class="task-empty-state task-empty-large">
+        <strong>No ${esc(label.toLowerCase())} tasks</strong>
+        <span>Change the filter to inspect another group.</span>
+      </div>
+    `;
+    return;
+  }
+
+  const groups = groupTasksForFilter(filtered, currentTaskFilter);
+  taskGroupList.innerHTML = groups.map(({ status, items }) => `
+    <section class="task-group">
+      <div class="task-group-header">
+        <span class="status-badge s-${status}">${esc(status)}</span>
+        <span>${items.length} task${items.length !== 1 ? "s" : ""}</span>
+      </div>
+      <div class="task-card-list">
+        ${items.map(renderTaskCard).join("")}
+      </div>
+    </section>
+  `).join("");
+}
+
+function renderTaskCard(task) {
+  const done = task.completedExecutions + task.failedExecutions;
+  const pct = task.totalExecutions > 0 ? Math.min(100, Math.round((done / task.totalExecutions) * 100)) : 0;
+  const canCancel = task.status === "pending" || task.status === "queued";
+
+  return `
+    <article class="task-card-row">
+      <div class="task-card-main">
+        <div class="task-card-title">
+          <code>${esc(task.id.slice(0, 8))}</code>
+          <span class="task-url" title="${esc(task.targetUrl)}">${esc(task.targetUrl)}</span>
+        </div>
+        <div class="task-card-meta">
+          <span>Scheduled ${task.scheduledAt ? fmtTime(task.scheduledAt) : "Immediate"}</span>
+          <span>Updated ${fmtTime(task.updatedAt)}</span>
+          <span>Proxy ${esc(task.proxyRouteId ?? "none")}</span>
+        </div>
+      </div>
+      <div class="task-progress">
+        <div class="progress-track">
+          <span class="progress-fill" style="width:${pct}%"></span>
+        </div>
+        <span>${done}/${task.totalExecutions}</span>
+      </div>
+      <div class="task-card-actions">
+        ${canCancel ? `<button type="button" class="btn-danger-small" data-cancel-task="${esc(task.id)}">Cancel</button>` : `<span class="muted-text">—</span>`}
+      </div>
+    </article>
+  `;
+}
+
+function countTasksByStatus(items) {
+  return TASK_STATUSES.reduce((acc, status) => {
+    acc[status] = items.filter((task) => task.status === status).length;
+    return acc;
+  }, {});
+}
+
+function filterTasks(items, filter) {
+  if (filter === "all") return items;
+  if (filter === "active") return items.filter((task) => ACTIVE_STATUSES.includes(task.status));
+  return items.filter((task) => task.status === filter);
+}
+
+function groupTasksForFilter(items, filter) {
+  const statuses = filter === "all"
+    ? TASK_STATUSES
+    : filter === "active"
+      ? ACTIVE_STATUSES
+      : [filter];
+
+  return statuses
+    .map((status) => ({
+      status,
+      items: sortTasksForDisplay(items.filter((task) => task.status === status))
+    }))
+    .filter((group) => group.items.length > 0);
+}
+
+function sortTasksForDisplay(items) {
+  return items.sort((a, b) => {
+    const aActive = ACTIVE_STATUSES.includes(a.status);
+    const bActive = ACTIVE_STATUSES.includes(b.status);
+    if (aActive && bActive) return taskTime(a, "scheduledAt") - taskTime(b, "scheduledAt");
+    if (aActive !== bActive) return aActive ? -1 : 1;
+    return taskTime(b, "updatedAt") - taskTime(a, "updatedAt");
+  });
+}
+
+function taskTime(task, field) {
+  const raw = task[field] ?? task.scheduledAt ?? task.createdAt ?? task.updatedAt;
+  const time = new Date(raw).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function updateTaskFilterButtons(counts, total) {
+  document.querySelectorAll("[data-task-filter]").forEach((button) => {
+    const filter = button.dataset.taskFilter;
+    button.classList.toggle("active", filter === currentTaskFilter);
+    const count = filter === "all"
+      ? total
+      : filter === "active"
+        ? ACTIVE_STATUSES.reduce((sum, status) => sum + (counts[status] ?? 0), 0)
+        : counts[filter] ?? 0;
+    button.dataset.count = count;
+  });
+}
+
+function setTaskFilter(filter) {
+  currentTaskFilter = filter || "active";
+  renderTasks();
+}
+
+function openTaskCenter(filter = currentTaskFilter) {
+  setTaskFilter(filter);
+  taskModal.hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+function closeTaskCenter() {
+  taskModal.hidden = true;
+  document.body.classList.remove("modal-open");
 }
 
 async function cancelTask(taskId) {
@@ -303,6 +501,7 @@ async function cancelTask(taskId) {
 async function cancelPendingTasks() {
   try {
     cancelPendingBtn.disabled = true;
+    cancelPendingInModalBtn.disabled = true;
     const res = await fetch("/api/tasks/cancel", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -322,6 +521,7 @@ async function cancelPendingTasks() {
     setFormMessage("Bulk cancel failed: " + (err instanceof Error ? err.message : String(err)), "err");
   } finally {
     cancelPendingBtn.disabled = false;
+    cancelPendingInModalBtn.disabled = false;
   }
 }
 
@@ -341,6 +541,7 @@ function renderStats(stats) {
   $("runningCountTop").textContent = counts.running  ?? 0;
   $("completedCount").textContent = counts.completed ?? 0;
   $("failedCount").textContent    = counts.failed    ?? 0;
+  $("cancelledCount").textContent = counts.cancelled ?? 0;
   renderRunSummary(stats.summary);
 
   // Proxy usage sidebar
@@ -556,16 +757,30 @@ function addLog(log) {
 
 clearLogsBtn.addEventListener("click", () => { logsEl.innerHTML = ""; });
 
-cancelPendingBtn.addEventListener("click", async () => {
+async function confirmCancelPendingTasks() {
   const count = Array.from(tasks.values()).filter((task) => ["pending", "queued"].includes(task.status)).length;
   if (count === 0) {
     setFormMessage("No pending or queued tasks to cancel.", "");
-    return;
+    return false;
   }
   if (!window.confirm(`Cancel ${count} pending/queued task${count !== 1 ? "s" : ""}?`)) {
-    return;
+    return false;
   }
   await cancelPendingTasks();
+  return true;
+}
+
+cancelPendingBtn.addEventListener("click", confirmCancelPendingTasks);
+cancelPendingInModalBtn.addEventListener("click", confirmCancelPendingTasks);
+
+openTaskCenterBtn.addEventListener("click", () => openTaskCenter());
+closeTaskCenterBtn.addEventListener("click", closeTaskCenter);
+taskModal.addEventListener("click", (event) => {
+  if (event.target.closest("[data-close-task-modal]")) closeTaskCenter();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !taskModal.hidden) closeTaskCenter();
 });
 
 logoutBtn.addEventListener("click", async () => {
@@ -573,7 +788,17 @@ logoutBtn.addEventListener("click", async () => {
   window.location.href = "/auth.html";
 });
 
-taskRows.addEventListener("click", async (event) => {
+document.querySelectorAll(".task-filter-btn").forEach((btn) => {
+  btn.addEventListener("click", () => setTaskFilter(btn.dataset.taskFilter));
+});
+
+taskStatusSummary.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-task-filter]");
+  if (!button) return;
+  openTaskCenter(button.dataset.taskFilter);
+});
+
+taskGroupList.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-cancel-task]");
   if (!button) return;
   const taskId = button.dataset.cancelTask;
@@ -581,6 +806,8 @@ taskRows.addEventListener("click", async (event) => {
   button.disabled = true;
   await cancelTask(taskId);
 });
+
+renderTasks();
 
 // ── Utilities ─────────────────────────────────
 function esc(v) {

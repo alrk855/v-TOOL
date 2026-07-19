@@ -75,7 +75,7 @@ export function openDatabase(databasePath: string) {
       return row ? mapTask(row) : null;
     },
 
-    listTasks(limit = 25): TaskRecord[] {
+    listTasks(limit = 500): TaskRecord[] {
       const rows = db
         .prepare("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?")
         .all(limit) as unknown as TaskRow[];

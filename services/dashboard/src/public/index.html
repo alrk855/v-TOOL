@@ -66,6 +66,10 @@
               <span class="metric-value" id="failedCount">0</span>
               <span class="metric-label">Failed</span>
             </div>
+            <div class="metric-item">
+              <span class="metric-value" id="cancelledCount">0</span>
+              <span class="metric-label">Cancelled</span>
+            </div>
           </div>
         </section>
 
@@ -255,33 +259,46 @@
           </div>
         </section>
 
-        <!-- Task distribution table -->
+        <!-- Task control -->
         <section class="card">
           <div class="card-header">
-            <h2 class="card-title">Task Distribution</h2>
+            <h2 class="card-title">Task Control</h2>
             <div class="table-actions">
               <span class="table-count" id="taskCount">0 tasks</span>
-              <button type="button" class="btn-danger-small" id="cancelPendingBtn">Cancel Pending/Queued</button>
+              <button type="button" class="btn-secondary" id="openTaskCenterBtn">Open Task Center</button>
+              <button type="button" class="btn-danger-small" id="cancelPendingBtn">Cancel Queue</button>
             </div>
           </div>
-          <div class="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Target</th>
-                  <th>Status</th>
-                  <th>Scheduled</th>
-                  <th>Progress</th>
-                  <th>Proxy</th>
-                  <th>Updated</th>
-                  <th>Action</th>
-                </tr>
-              </thead>
-              <tbody id="taskRows"></tbody>
-            </table>
-          </div>
+          <div class="task-status-grid" id="taskStatusSummary"></div>
+          <div class="active-task-preview" id="activeTaskPreview"></div>
         </section>
+
+        <div class="task-modal" id="taskModal" hidden>
+          <div class="task-modal-backdrop" data-close-task-modal></div>
+          <section class="task-window" role="dialog" aria-modal="true" aria-labelledby="taskWindowTitle">
+            <div class="task-window-header">
+              <div>
+                <h2 class="card-title" id="taskWindowTitle">Task Center</h2>
+                <p class="task-window-subtitle" id="taskModalCount">0 tasks</p>
+              </div>
+              <button type="button" class="btn-icon-remove" id="closeTaskCenterBtn" title="Close task center">✕</button>
+            </div>
+            <div class="task-window-toolbar">
+              <div class="task-filter-bar" aria-label="Task status filter">
+                <button type="button" class="task-filter-btn active" data-task-filter="active">Active</button>
+                <button type="button" class="task-filter-btn" data-task-filter="pending">Pending</button>
+                <button type="button" class="task-filter-btn" data-task-filter="queued">Queued</button>
+                <button type="button" class="task-filter-btn" data-task-filter="running">Running</button>
+                <button type="button" class="task-filter-btn" data-task-filter="completed">Completed</button>
+                <button type="button" class="task-filter-btn" data-task-filter="failed">Failed</button>
+                <button type="button" class="task-filter-btn" data-task-filter="cancelled">Cancelled</button>
+                <button type="button" class="task-filter-btn" data-task-filter="all">All</button>
+              </div>
+              <button type="button" class="btn-danger-small" id="cancelPendingInModalBtn">Cancel Queue</button>
+            </div>
+            <div class="task-group-list" id="taskGroupList"></div>
+          </section>
+        </div>
 
         <!-- Execution logs -->
         <section class="card">
