@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DPLT Control — Distributed Performance & Localization Testing Suite</title>
+    <meta name="description" content="Control panel for distributed synthetic browser simulation, diurnal scheduling, proxy management, and telemetry inspection." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- Header -->
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-logo">
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><circle cx="14" cy="14" r="14" fill="url(#lg)"/><path d="M8 14l4 4 8-8" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><defs><linearGradient id="lg" x1="0" y1="0" x2="28" y2="28" gradientUnits="userSpaceOnUse"><stop stop-color="#6366f1"/><stop offset="1" stop-color="#06b6d4"/></linearGradient></defs></svg>
+        </div>
+        <div>
+          <h1>DPLT Control</h1>
+          <p class="topbar-sub">Distributed Performance &amp; Localization Testing Suite</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="btn-secondary" id="launchChromeBtn" style="border-color:var(--accent-cyan);color:var(--accent-cyan)">
+          Launch Debug Chrome
+        </button>
+        <div class="stat-chip" id="activeCount">
+          <span class="chip-dot running"></span>
+          <span id="runningCountTop">0</span> running
+        </div>
+        <div class="status-pill" id="socketStatus">
+          <span class="status-dot"></span>Connecting
+        </div>
+      </div>
+    </header>
+
+    <main class="app-layout">
+
+      <!-- ══════════ LEFT COLUMN ══════════ -->
+      <aside class="sidebar">
+
+        <!-- Metrics panel -->
+        <section class="card metrics-card">
+          <h2 class="card-title">Telemetry</h2>
+          <div class="metrics-grid">
+            <div class="metric-item">
+              <span class="metric-value" id="pendingCount">0</span>
+              <span class="metric-label">Pending</span>
+            </div>
+            <div class="metric-item">
+              <span class="metric-value" id="queuedCount">0</span>
+              <span class="metric-label">Queued</span>
+            </div>
+            <div class="metric-item accent-running">
+              <span class="metric-value" id="runningCount">0</span>
+              <span class="metric-label">Running</span>
+            </div>
+            <div class="metric-item accent-ok">
+              <span class="metric-value" id="completedCount">0</span>
+              <span class="metric-label">Completed</span>
+            </div>
+            <div class="metric-item accent-fail">
+              <span class="metric-value" id="failedCount">0</span>
+              <span class="metric-label">Failed</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Proxy usage panel -->
+        <section class="card">
+          <h2 class="card-title">Proxy Usage</h2>
+          <div id="proxyUsageList" class="proxy-usage-list">
+            <p class="muted-text">No proxy usage recorded yet.</p>
+          </div>
+        </section>
+
+      </aside>
+
+      <!-- ══════════ MAIN COLUMN ══════════ -->
+      <div class="main-col">
+
+        <!-- Task form card -->
+        <section class="card form-card">
+          <div class="card-header">
+            <h2 class="card-title">New Simulation</h2>
+            <div class="tab-bar">
+              <button class="tab-btn active" data-tab="target" id="tab-target">Target &amp; Schedule</button>
+              <button class="tab-btn" data-tab="workflow" id="tab-workflow">Workflow Selectors</button>
+              <button class="tab-btn" data-tab="proxies" id="tab-proxies">Proxy Pool</button>
+            </div>
+          </div>
+
+          <form id="taskForm" autocomplete="off">
+
+            <!-- ── TAB: Target & Schedule ── -->
+            <div class="tab-panel active" id="panel-target">
+              <div class="field-group">
+                <label class="field-label" for="targetUrl">Target URL</label>
+                <input class="field-input" id="targetUrl" name="targetUrl" type="url" placeholder="https://example.com/page" required />
+              </div>
+
+              <div class="field-row">
+                <div class="field-group">
+                  <label class="field-label" for="totalExecutions">Total executions</label>
+                  <input class="field-input" id="totalExecutions" name="totalExecutions" type="number" min="1" max="100000" value="25" required />
+                </div>
+                <div class="field-group">
+                  <label class="field-label" for="totalHours">Spread over (hours)</label>
+                  <input class="field-input" id="totalHours" name="totalHours" type="number" min="0" max="720" step="0.25" value="8" required />
+                </div>
+                <div class="field-group">
+                  <label class="field-label" for="maxParallelThreads">Max parallel threads</label>
+                  <input class="field-input" id="maxParallelThreads" name="maxParallelThreads" type="number" min="1" max="256" value="4" required />
+                </div>
+              </div>
+
+              <div class="field-group">
+                <label class="field-label">Active hours window</label>
+                <div class="field-row hours-row">
+                  <div class="field-group">
+                    <label class="field-label-small" for="activeHoursStart">Start (0–23)</label>
+                    <input class="field-input" id="activeHoursStart" name="activeHoursStart" type="number" min="0" max="23" value="8" />
+                  </div>
+                  <span class="hours-sep">→</span>
+                  <div class="field-group">
+                    <label class="field-label-small" for="activeHoursEnd">End (1–24)</label>
+                    <input class="field-input" id="activeHoursEnd" name="activeHoursEnd" type="number" min="1" max="24" value="19" />
+                  </div>
+                  <div class="hours-hint">
+                    Dispatches outside this window roll to the next day.
+                  </div>
+                </div>
+              </div>
+
+              <div class="field-row">
+                <div class="field-group">
+                  <label class="field-label" for="locales">Locales <span class="hint">(comma-separated)</span></label>
+                  <input class="field-input" id="locales" name="locales" value="en-US, de-DE, ja-JP" required />
+                </div>
+                <div class="field-group">
+                  <label class="field-label" for="regions">Regions <span class="hint">(comma-separated)</span></label>
+                  <input class="field-input" id="regions" name="regions" value="US, DE, JP" required />
+                </div>
+              </div>
+            </div>
+
+            <!-- ── TAB: Workflow Selectors ── -->
+            <div class="tab-panel" id="panel-workflow">
+              <p class="tab-intro">
+                Define the sequence of UI elements the browser will interact with on the target page.
+                Use CSS selectors or leave blank to skip that stage.
+              </p>
+
+              <div class="workflow-steps">
+                <div class="workflow-step">
+                  <span class="step-badge">1</span>
+                  <div class="field-group full">
+                    <label class="field-label" for="wf_entrySelector">Entry selector <span class="hint">First element to click to enter the flow</span></label>
+                    <input class="field-input mono" id="wf_entrySelector" name="wf_entrySelector" placeholder=".start-button, [data-action='open']" />
+                  </div>
+                </div>
+                <div class="workflow-step">
+                  <span class="step-badge">2</span>
+                  <div class="field-group full">
+                    <label class="field-label" for="wf_targetAssetSelector">Target element selector <span class="hint">The specific item to choose or vote on</span></label>
+                    <input class="field-input mono" id="wf_targetAssetSelector" name="wf_targetAssetSelector" placeholder=".gallery-item:first-child, [data-id='target']" />
+                  </div>
+                </div>
+                <div class="workflow-step">
+                  <span class="step-badge">3</span>
+                  <div class="field-group full">
+                    <label class="field-label" for="wf_selectionStateSelector">Selection state selector <span class="hint">Optional — confirms item is selected before proceeding</span></label>
+                    <input class="field-input mono" id="wf_selectionStateSelector" name="wf_selectionStateSelector" placeholder=".selected, [aria-selected='true']" />
+                  </div>
+                </div>
+                <div class="workflow-step">
+                  <span class="step-badge step-badge-final">4</span>
+                  <div class="field-group full">
+                    <label class="field-label" for="wf_finalActionSelector">Submit / Confirm selector <span class="hint">Or define text labels below as fallback</span></label>
+                    <input class="field-input mono" id="wf_finalActionSelector" name="wf_finalActionSelector" placeholder="button[type='submit'], .vote-confirm" />
+                  </div>
+                </div>
+                <div class="workflow-step">
+                  <span class="step-badge step-badge-final">↩</span>
+                  <div class="field-group full">
+                    <label class="field-label" for="wf_finalActionTexts">Submit text labels <span class="hint">Comma-separated fallback text labels for the confirm button</span></label>
+                    <input class="field-input mono" id="wf_finalActionTexts" name="wf_finalActionTexts" placeholder="Vote, Submit, Confirm, Гласај" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ── TAB: Proxy Pool ── -->
+            <div class="tab-panel" id="panel-proxies">
+              <p class="tab-intro">
+                Add proxy servers to the pool. Each proxy can have an individual usage limit.
+                Dispatches are automatically rotated across eligible proxies within their limits.
+              </p>
+
+              <div id="proxyPoolRows"></div>
+
+              <button type="button" class="btn-secondary" id="addProxyBtn">+ Add Proxy</button>
+            </div>
+
+            <!-- Form actions -->
+            <div class="form-footer">
+              <button type="button" class="btn-secondary" id="saveSettingsBtn">Save as default</button>
+              <button type="submit" class="btn-primary" id="submitBtn">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 8l4 4 6-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                Queue Simulation
+              </button>
+            </div>
+
+            <p id="formMessage" class="form-message"></p>
+          </form>
+        </section>
+
+        <!-- Persistent run overview -->
+        <section class="card">
+          <div class="card-header">
+            <h2 class="card-title">Run Overview</h2>
+            <span class="table-count" id="summaryUpdated">Persistent SQLite totals</span>
+          </div>
+          <div class="overview-grid">
+            <div class="overview-metric">
+              <span class="overview-value" id="summaryTotal">0</span>
+              <span class="overview-label">Total Runs</span>
+            </div>
+            <div class="overview-metric accent-ok">
+              <span class="overview-value" id="summaryCompleted">0</span>
+              <span class="overview-label">Completed</span>
+            </div>
+            <div class="overview-metric accent-ok">
+              <span class="overview-value" id="summarySubmitClicks">0</span>
+              <span class="overview-label">Submit Clicks</span>
+            </div>
+            <div class="overview-metric accent-fail">
+              <span class="overview-value" id="summaryFailed">0</span>
+              <span class="overview-label">Failed</span>
+            </div>
+            <div class="overview-metric">
+              <span class="overview-value" id="summaryAvgDuration">0ms</span>
+              <span class="overview-label">Avg Duration</span>
+            </div>
+          </div>
+          <div class="workflow-summary" id="workflowStageRows"></div>
+          <div class="failure-summary">
+            <h3 class="summary-subtitle">Recent Failures</h3>
+            <div id="recentFailureList" class="recent-failure-list">
+              <p class="muted-text">No failures recorded yet.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Task distribution table -->
+        <section class="card">
+          <div class="card-header">
+            <h2 class="card-title">Task Distribution</h2>
+            <span class="table-count" id="taskCount">0 tasks</span>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Target</th>
+                  <th>Status</th>
+                  <th>Scheduled</th>
+                  <th>Progress</th>
+                  <th>Proxy</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="taskRows"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Execution logs -->
+        <section class="card">
+          <div class="card-header" style="align-items: center;">
+            <h2 class="card-title" style="margin-bottom: 0;">Execution Logs</h2>
+            <div class="log-filters" style="display:flex;gap:8px;margin-left:auto;margin-right:16px">
+              <button type="button" class="btn-filter active" data-filter="all">All</button>
+              <button type="button" class="btn-filter" data-filter="completed">Success</button>
+              <button type="button" class="btn-filter" data-filter="failed">Failed</button>
+            </div>
+            <button type="button" class="btn-ghost" id="clearLogsBtn">Clear</button>
+          </div>
+          <div id="logs" class="logs"></div>
+        </section>
+
+      </div>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

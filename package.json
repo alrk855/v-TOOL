@@ -1,0 +1,34 @@
+{
+  "name": "distributed-performance-localization-suite",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "services/dashboard",
+    "services/runner-engine"
+  ],
+  "scripts": {
+    "dev":              "concurrently --names \"dashboard,runner\" --prefix-colors \"cyan,magenta\" \"npm run dev:dashboard\" \"npm run dev:runner\"",
+    "dev:dashboard":    "npm run dev -w services/dashboard",
+    "dev:runner":       "npm run dev -w services/runner-engine",
+    "build":            "npm run build --workspaces",
+    "typecheck":        "npm run typecheck --workspaces",
+
+    "docker:build":     "docker compose build",
+    "docker:up":        "docker compose up",
+    "docker:up:bg":     "docker compose up -d",
+    "docker:down":      "docker compose down",
+    "docker:logs":      "docker compose logs -f",
+    "docker:restart":   "docker compose down && docker compose up --build",
+
+    "docker:push":      "node scripts/docker-push.mjs",
+
+    "git:init":         "git init && git add -A && git commit -m \"chore: initial commit\"",
+    "git:push":         "node scripts/git-push.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.3"
+  }
+}
