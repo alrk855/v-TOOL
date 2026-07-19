@@ -8,6 +8,7 @@ services:
       DASHBOARD_PORT: ${DASHBOARD_PORT:-3000}
       DATABASE_PATH: ${DATABASE_PATH:-/app/data/telemetry.sqlite}
       PROXY_ROUTES_JSON: ${PROXY_ROUTES_JSON:-}
+      RUNNER_API_TOKEN: ${RUNNER_API_TOKEN:-}
       TZ: ${TZ:-Europe/Skopje}
     ports:
       - "${DASHBOARD_PORT:-3000}:3000"
@@ -26,6 +27,7 @@ services:
     container_name: dplt-runner-engine
     environment:
       DASHBOARD_API_BASE: ${DASHBOARD_API_BASE:-http://dashboard-service:3000}
+      RUNNER_API_TOKEN: ${RUNNER_API_TOKEN:-}
       RUNNER_CONCURRENCY: ${RUNNER_CONCURRENCY:-4}
       RUNNER_POLL_INTERVAL_MS: ${RUNNER_POLL_INTERVAL_MS:-2500}
       DIAGNOSTIC_ENDPOINT: ${DIAGNOSTIC_ENDPOINT:-https://api.ipify.org?format=json}

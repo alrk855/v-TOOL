@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DPLT Access</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #0b0e17; color: #f1f5f9; }
+      main { width: min(420px, calc(100vw - 32px)); padding: 28px; background: #111827; border: 1px solid rgba(99,102,241,.25); border-radius: 14px; box-shadow: 0 18px 60px rgba(0,0,0,.45); }
+      h1 { margin: 0 0 8px; font-size: 22px; }
+      p { margin: 0 0 22px; color: #94a3b8; line-height: 1.6; }
+      label { display: block; margin-bottom: 8px; color: #94a3b8; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+      input { width: 100%; box-sizing: border-box; padding: 12px 13px; border: 1px solid rgba(99,102,241,.25); border-radius: 8px; background: #0f1623; color: #f1f5f9; font: inherit; }
+      input:focus { outline: none; border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.15); }
+      button { width: 100%; margin-top: 16px; padding: 12px 14px; border: 0; border-radius: 8px; background: #6366f1; color: white; font: inherit; font-weight: 800; cursor: pointer; }
+      button:disabled { opacity: .55; cursor: wait; }
+      .message { min-height: 20px; margin-top: 12px; color: #f43f5e; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 id="title">Dashboard Login</h1>
+      <p id="copy">Enter the local admin password to continue.</p>
+      <form id="authForm">
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" minlength="10" required autofocus />
+        <button id="submitBtn" type="submit">Continue</button>
+        <div id="message" class="message"></div>
+      </form>
+    </main>
+    <script>
+      const form = document.getElementById("authForm");
+      const password = document.getElementById("password");
+      const message = document.getElementById("message");
+      const title = document.getElementById("title");
+      const copy = document.getElementById("copy");
+      const button = document.getElementById("submitBtn");
+      let mode = new URLSearchParams(location.search).get("mode") === "setup" ? "setup" : "login";
+
+      fetch("/api/auth/status")
+        .then((res) => res.json())
+        .then((status) => {
+          mode = status.configured ? mode : "setup";
+          render();
+        })
+        .catch(() => render());
+
+      function render() {
+        const setup = mode === "setup";
+        title.textContent = setup ? "Set Admin Password" : "Dashboard Login";
+        copy.textContent = setup
+          ? "Create the local admin password for this machine. It will be stored as a salted hash."
+          : "Enter the local admin password to continue.";
+        password.autocomplete = setup ? "new-password" : "current-password";
+        button.textContent = setup ? "Create Password" : "Log In";
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        message.textContent = "";
+        button.disabled = true;
+        try {
+          const res = await fetch(mode === "setup" ? "/api/auth/setup" : "/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: password.value })
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.error || res.statusText);
+          }
+          location.href = "/";
+        } catch (err) {
+          message.textContent = err instanceof Error ? err.message : String(err);
+        } finally {
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

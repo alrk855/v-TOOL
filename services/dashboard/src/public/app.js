@@ -20,6 +20,8 @@ const addProxyBtn   = $("addProxyBtn");
 const saveBtn       = $("saveSettingsBtn");
 const clearLogsBtn  = $("clearLogsBtn");
 const launchChromeBtn = $("launchChromeBtn");
+const cancelPendingBtn = $("cancelPendingBtn");
+const logoutBtn = $("logoutBtn");
 
 // ── Tabs ──────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -256,6 +258,7 @@ function renderTasks() {
   taskRows.innerHTML = sorted.slice(0, 200).map((task) => {
     const done = task.completedExecutions + task.failedExecutions;
     const pct  = task.totalExecutions > 0 ? Math.round((done / task.totalExecutions) * 100) : 0;
+    const canCancel = task.status === "pending" || task.status === "queued";
     return `
       <tr>
         <td><code style="font-size:11px;color:#6366f1">${task.id.slice(0, 8)}</code></td>
@@ -272,8 +275,54 @@ function renderTasks() {
         </td>
         <td><code style="font-size:11px">${esc(task.proxyRouteId ?? "—")}</code></td>
         <td style="white-space:nowrap;color:var(--text-muted)">${fmtTime(task.updatedAt)}</td>
+        <td>${canCancel ? `<button type="button" class="btn-danger-small" data-cancel-task="${esc(task.id)}">Cancel</button>` : `<span class="muted-text">—</span>`}</td>
       </tr>`;
   }).join("");
+}
+
+async function cancelTask(taskId) {
+  try {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "cancelled" })
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    const { task } = await res.json();
+    tasks.set(task.id, task);
+    renderTasks();
+    refreshStats();
+    setFormMessage(`Cancelled task ${task.id.slice(0, 8)}.`, "ok");
+  } catch (err) {
+    setFormMessage("Cancel failed: " + (err instanceof Error ? err.message : String(err)), "err");
+  }
+}
+
+async function cancelPendingTasks() {
+  try {
+    cancelPendingBtn.disabled = true;
+    const res = await fetch("/api/tasks/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ statuses: ["pending", "queued"] })
+    });
+    if (!res.ok) {
+      throw new Error(await res.text());
+    }
+    const data = await res.json();
+    for (const task of data.tasks ?? []) {
+      tasks.set(task.id, task);
+    }
+    renderTasks();
+    refreshStats();
+    setFormMessage(`Cancelled ${data.cancelled ?? 0} pending/queued task${data.cancelled === 1 ? "" : "s"}.`, "ok");
+  } catch (err) {
+    setFormMessage("Bulk cancel failed: " + (err instanceof Error ? err.message : String(err)), "err");
+  } finally {
+    cancelPendingBtn.disabled = false;
+  }
 }
 
 async function refreshStats() {
@@ -317,7 +366,7 @@ function renderRunSummary(summary = {}) {
   $("summaryCompleted").textContent = summary.completedRuns ?? 0;
   $("summaryFailed").textContent = summary.failedRuns ?? 0;
   $("summaryAvgDuration").textContent = fmtDuration(summary.avgDurationMs ?? 0);
-  $("summaryUpdated").textContent = "Updated " + new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  $("summaryUpdated").textContent = "Updated " + fmtClock(new Date());
 
   const workflow = summary.workflow ?? {};
   $("summarySubmitClicks").textContent = workflow.commit?.matched ?? 0;
@@ -395,6 +444,7 @@ function addLog(log) {
   div.dataset.status = log.statusCode;
   const ok = log.statusCode === "completed";
   const meta = parseMetadata(log.metadata);
+  const routedIp = meta.routedIp || "—";
   const stepPillsHtml = renderStepPills(meta.workflow);
 
   let detailsHtml = "";
@@ -475,16 +525,14 @@ function addLog(log) {
     `;
   }
 
-  const timestamp = log.createdAt
-    ? log.createdAt.replace("T", " ").slice(0, 19)
-    : new Date().toISOString().replace("T", " ").slice(0, 19);
+  const timestamp = fmtLogTime(log.createdAt);
 
   div.innerHTML = `
     <div class="log-header">
       <span class="log-caret">▶</span>
       <span class="log-ts">${timestamp}</span>
       <span class="log-status ${ok ? "ok" : "fail"}">${ok ? "✓ OK" : "✗ FAIL"}</span>
-      <span class="log-meta">task=${log.taskId.slice(0, 8)} thread=${log.threadId} proxy=${esc(log.proxyRouteId)} locale=${log.locale} region=${log.region}</span>
+      <span class="log-meta">task=${log.taskId.slice(0, 8)} thread=${log.threadId} proxy=${esc(log.proxyRouteId)} ip=<span class="log-ip">${esc(routedIp)}</span> locale=${log.locale} region=${log.region}</span>
     </div>
     ${stepPillsHtml}
     ${detailsHtml}
@@ -508,6 +556,32 @@ function addLog(log) {
 
 clearLogsBtn.addEventListener("click", () => { logsEl.innerHTML = ""; });
 
+cancelPendingBtn.addEventListener("click", async () => {
+  const count = Array.from(tasks.values()).filter((task) => ["pending", "queued"].includes(task.status)).length;
+  if (count === 0) {
+    setFormMessage("No pending or queued tasks to cancel.", "");
+    return;
+  }
+  if (!window.confirm(`Cancel ${count} pending/queued task${count !== 1 ? "s" : ""}?`)) {
+    return;
+  }
+  await cancelPendingTasks();
+});
+
+logoutBtn.addEventListener("click", async () => {
+  await fetch("/api/auth/logout", { method: "POST" });
+  window.location.href = "/auth.html";
+});
+
+taskRows.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-cancel-task]");
+  if (!button) return;
+  const taskId = button.dataset.cancelTask;
+  if (!taskId) return;
+  button.disabled = true;
+  await cancelTask(taskId);
+});
+
 // ── Utilities ─────────────────────────────────
 function esc(v) {
   return String(v ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
@@ -516,7 +590,35 @@ function esc(v) {
 function fmtTime(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+}
+
+function fmtClock(date) {
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
+}
+
+function fmtLogTime(iso) {
+  const date = iso ? new Date(iso) : new Date();
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  });
 }
 
 function fmtDuration(ms) {

@@ -15,6 +15,7 @@ export function openDatabase(databasePath: string) {
 
   const migration = fs.readFileSync(path.join(migrationsDir, "001_init.sql"), "utf8");
   db.exec(migration);
+  ensureTaskSchema(db);
 
   return {
     createTask(input: CreateTaskInput): TaskRecord {
@@ -118,6 +119,31 @@ export function openDatabase(databasePath: string) {
       return this.getTask(id);
     },
 
+    cancelTasks(statuses: TaskStatus[] = ["pending", "queued"]): TaskRecord[] {
+      if (statuses.length === 0) return [];
+      const placeholders = statuses.map((_, index) => `@status${index}`).join(", ");
+      const params = Object.fromEntries(statuses.map((status, index) => [`status${index}`, status]));
+      const rows = db
+        .prepare(`SELECT id FROM tasks WHERE status IN (${placeholders}) ORDER BY created_at DESC`)
+        .all(params) as Array<{ id: string }>;
+      if (rows.length === 0) return [];
+
+      const now = new Date().toISOString();
+      db.exec("BEGIN");
+      try {
+        const stmt = db.prepare("UPDATE tasks SET status = 'cancelled', completed_at = @now, updated_at = @now WHERE id = @id");
+        for (const row of rows) {
+          stmt.run({ id: row.id, now });
+        }
+        db.exec("COMMIT");
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+
+      return rows.map((row) => this.getTask(row.id)).filter((task): task is TaskRecord => Boolean(task));
+    },
+
     promotePendingTask(id: string): TaskRecord | null {
       const now = new Date().toISOString();
       db.prepare("UPDATE tasks SET status = 'queued', updated_at = @now WHERE id = @id AND status = 'pending'").run({
@@ -206,6 +232,26 @@ export function openDatabase(databasePath: string) {
       return { taskCounts, executionCounts, proxyUsage, summary: buildExecutionSummary(db) };
     }
   };
+}
+
+function ensureTaskSchema(db: DatabaseSync) {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>).map((column) => column.name)
+  );
+  const requiredColumns = [
+    ["scheduled_at", "TEXT"],
+    ["dispatch_index", "INTEGER"],
+    ["agent_profile_index", "INTEGER"],
+    ["proxy_route_id", "TEXT"],
+    ["workflow_json", "TEXT NOT NULL DEFAULT '{}'"],
+    ["proxy_json", "TEXT"]
+  ] as const;
+
+  for (const [name, definition] of requiredColumns) {
+    if (!columns.has(name)) {
+      db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`);
+    }
+  }
 }
 
 function buildExecutionSummary(db: DatabaseSync) {

@@ -172,6 +172,7 @@ Copy `.env.example` to `.env` and fill in your values.
 | `DATABASE_PATH` | `/app/data/telemetry.sqlite` | SQLite file path (mounted volume in Docker) |
 | `TZ` | `Europe/Skopje` | Local timezone used by Docker services for active-hours scheduling |
 | `DASHBOARD_API_BASE` | `http://dashboard-service:3000` | URL the runner uses to reach the dashboard |
+| `RUNNER_API_TOKEN` | _(none)_ | Shared bearer token used by the runner for protected internal dashboard APIs |
 | `RUNNER_CONCURRENCY` | `4` | Max simultaneous browser threads |
 | `RUNNER_POLL_INTERVAL_MS` | `2500` | How often the runner checks for new tasks (ms) |
 | `DIAGNOSTIC_ENDPOINT` | `https://api.ipify.org?format=json` | IP lookup endpoint for proxy isolation checks |

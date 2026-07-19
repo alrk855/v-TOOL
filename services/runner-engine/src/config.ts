@@ -10,6 +10,7 @@ const _devMode = process.env.DEV_MODE === "true" || (process.env.DEV_MODE !== "f
 
 export const config = {
   dashboardApiBase: process.env.DASHBOARD_API_BASE ?? "http://localhost:3000",
+  runnerApiToken: process.env.RUNNER_API_TOKEN,
   runnerConcurrency: Number(process.env.RUNNER_CONCURRENCY ?? 4),
   pollIntervalMs: Number(process.env.RUNNER_POLL_INTERVAL_MS ?? 2500),
   diagnosticEndpoint: process.env.DIAGNOSTIC_ENDPOINT ?? "https://api.ipify.org?format=json",

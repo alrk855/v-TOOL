@@ -3,7 +3,8 @@ import type { TaskRecord } from "./types.js";
 
 export async function claimTask(): Promise<TaskRecord | null> {
   const response = await fetch(`${config.dashboardApiBase}/api/runner/claim`, {
-    method: "POST"
+    method: "POST",
+    headers: authHeaders()
   });
 
   if (response.status === 204) {
@@ -21,7 +22,7 @@ export async function claimTask(): Promise<TaskRecord | null> {
 export async function updateTaskStatus(taskId: string, status: TaskRecord["status"]) {
   const response = await fetch(`${config.dashboardApiBase}/api/tasks/${taskId}/status`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ status })
   });
 
@@ -33,11 +34,15 @@ export async function updateTaskStatus(taskId: string, status: TaskRecord["statu
 export async function logExecution(payload: Record<string, unknown>) {
   const response = await fetch(`${config.dashboardApiBase}/api/execution-logs`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(payload)
   });
 
   if (!response.ok) {
     throw new Error(`Unable to log execution: ${response.status} ${await response.text()}`);
   }
+}
+
+function authHeaders(): Record<string, string> {
+  return config.runnerApiToken ? { Authorization: `Bearer ${config.runnerApiToken}` } : {};
 }

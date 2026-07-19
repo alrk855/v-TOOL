@@ -113,49 +113,40 @@ function buildDiurnalSchedule(
 ): number[] {
   if (count <= 0) return [];
 
-  const activeWindowMs = (activeEnd - activeStart) * 3_600_000;
-  const totalDays = Math.max(1, Math.ceil(totalHours / (activeEnd - activeStart)));
+  const totalMs = totalHours * 3_600_000;
+  const scheduleStart = clampToActiveWindow(nowMs, activeStart, activeEnd);
+  const spacingMs = count <= 1 ? 0 : totalMs / (count - 1);
 
-  // Generate normalised probability weights for each slot using a cosine peak at 60% through the active window
+  // Generate a gentle diurnal curve by nudging slots around their linear position.
   const weights = Array.from({ length: count }, (_, i) => {
-    // Position in [0,1] spread linearly across the total window
     const t = count === 1 ? 0.5 : i / (count - 1);
-    // Cosine peak at t = 0.6 (mid-to-late afternoon)
     const cosVal = Math.cos((t - 0.6) * Math.PI * 1.2);
     return 0.3 + 0.7 * Math.max(0, cosVal);
   });
+  const averageWeight = weights.reduce((a, b) => a + b, 0) / weights.length;
 
-  // Normalise and build cumulative times
-  const totalWeight = weights.reduce((a, b) => a + b, 0);
-  let cursor = nowMs;
   const times: number[] = [];
 
   for (let i = 0; i < count; i++) {
-    // Fraction of the total active-hours span this slot occupies
-    const fraction = weights[i] / totalWeight;
-    const rawOffsetMs = fraction * totalHours * 3_600_000 * count;
+    const linearOffsetMs = count === 1 ? 0 : i * spacingMs;
+    const densityNudgeMs = spacingMs > 0 ? (averageWeight - weights[i]) * spacingMs * 0.25 : 0;
+    const jitterMs = spacingMs > 0 && i > 0 && i < count - 1 ? randomJitterMs(spacingMs * 0.2) : 0;
+    const offsetMs = clamp(linearOffsetMs + densityNudgeMs + jitterMs, 0, totalMs);
 
-    cursor += rawOffsetMs + randomJitterMs(rawOffsetMs);
-
-    // Clamp into active-hours window: advance past quiet hours if needed
-    const adjusted = clampToActiveWindow(cursor, activeStart, activeEnd, activeWindowMs, totalDays);
-    times.push(adjusted);
-    cursor = adjusted;
+    times.push(clampToActiveWindow(scheduleStart + offsetMs, activeStart, activeEnd));
   }
 
-  return times;
+  return times.sort((a, b) => a - b);
 }
 
 /** Ensures a timestamp falls within the active hours window; rolls to next day if outside. */
 function clampToActiveWindow(
   timestampMs: number,
   activeStart: number,
-  activeEnd: number,
-  activeWindowMs: number,
-  maxDays: number
+  activeEnd: number
 ): number {
   let t = new Date(timestampMs);
-  for (let day = 0; day < maxDays + 1; day++) {
+  for (let day = 0; day < 8; day++) {
     const h = t.getHours() + t.getMinutes() / 60;
     if (h >= activeStart && h < activeEnd) {
       return t.getTime();
@@ -252,4 +243,8 @@ function randomJitterMs(base: number): number {
 
 function randomInt(min: number, max: number): number {
   return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }

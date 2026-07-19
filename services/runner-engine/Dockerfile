@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright:v1.49.1-noble AS deps
+FROM mcr.microsoft.com/playwright:v1.61.1-noble AS deps
 WORKDIR /app
 COPY package.json package-lock.json* tsconfig.base.json ./
 COPY services/runner-engine/package.json services/runner-engine/package.json
@@ -8,7 +8,7 @@ FROM deps AS build
 COPY services/runner-engine services/runner-engine
 RUN npm run build -w services/runner-engine
 
-FROM mcr.microsoft.com/playwright:v1.49.1-noble AS runtime
+FROM mcr.microsoft.com/playwright:v1.61.1-noble AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules

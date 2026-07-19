@@ -221,6 +221,24 @@ export function createRouter(store: Store, io: Server, scheduler: Scheduler) {
     res.json({ task });
   });
 
+  router.post("/api/tasks/cancel", (req, res) => {
+    const parsed = z
+      .object({
+        statuses: z.array(z.enum(["pending", "queued"])).optional()
+      })
+      .safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    const tasks = store.cancelTasks(parsed.data.statuses);
+    for (const task of tasks) {
+      io.emit("task:updated", task);
+    }
+    res.json({ cancelled: tasks.length, tasks });
+  });
+
   router.post("/api/execution-logs", (req, res) => {
     const parsed = logSchema.safeParse(req.body);
     if (!parsed.success) {

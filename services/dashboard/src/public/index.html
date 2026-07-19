@@ -33,6 +33,7 @@
         <div class="status-pill" id="socketStatus">
           <span class="status-dot"></span>Connecting
         </div>
+        <button class="btn-secondary" id="logoutBtn" type="button">Log out</button>
       </div>
     </header>
 
@@ -258,7 +259,10 @@
         <section class="card">
           <div class="card-header">
             <h2 class="card-title">Task Distribution</h2>
-            <span class="table-count" id="taskCount">0 tasks</span>
+            <div class="table-actions">
+              <span class="table-count" id="taskCount">0 tasks</span>
+              <button type="button" class="btn-danger-small" id="cancelPendingBtn">Cancel Pending/Queued</button>
+            </div>
           </div>
           <div class="table-scroll">
             <table>
@@ -271,6 +275,7 @@
                   <th>Progress</th>
                   <th>Proxy</th>
                   <th>Updated</th>
+                  <th>Action</th>
                 </tr>
               </thead>
               <tbody id="taskRows"></tbody>
