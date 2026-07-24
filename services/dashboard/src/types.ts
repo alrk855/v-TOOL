@@ -40,6 +40,7 @@ export interface CreateTaskInput {
   activeHoursEnd?: number | null;
   workflow?: WorkflowDefinition | null;
   proxy?: ProxyRouteDefinition | null;
+  batchId?: string | null;
 }
 
 export interface TaskRecord extends CreateTaskInput {
@@ -55,6 +56,7 @@ export interface TaskRecord extends CreateTaskInput {
   dispatchIndex: number | null;
   agentProfileIndex: number | null;
   proxyRouteId: string | null;
+  batchId?: string | null;
 }
 
 export interface ExecutionLogInput {

@@ -221,6 +221,65 @@ export function createRouter(store: Store, io: Server, scheduler: Scheduler) {
     res.json({ task });
   });
 
+  router.post("/api/tasks/:id/postpone", (req, res) => {
+    const parsed = z.object({
+      scheduledAt: z.string().optional(),
+      delayMinutes: z.coerce.number().optional()
+    }).safeParse(req.body);
+
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.flatten() });
+      return;
+    }
+
+    let targetTime: string;
+    if (parsed.data.scheduledAt) {
+      targetTime = new Date(parsed.data.scheduledAt).toISOString();
+    } else if (typeof parsed.data.delayMinutes === "number") {
+      targetTime = new Date(Date.now() + parsed.data.delayMinutes * 60_000).toISOString();
+    } else {
+      targetTime = new Date(Date.now() + 15 * 60_000).toISOString(); // Default +15 mins
+    }
+
+    const task = store.postponeTask(req.params.id, targetTime, "pending");
+    if (!task) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
+    io.emit("task:updated", task);
+    res.json({ task });
+  });
+
+  router.post("/api/tasks/:id/requeue", (req, res) => {
+    const scheduledAt = req.body.scheduledAt ? new Date(req.body.scheduledAt).toISOString() : new Date().toISOString();
+    const task = store.requeueTask(req.params.id, scheduledAt);
+    if (!task) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
+    io.emit("task:updated", task);
+    res.json({ task });
+  });
+
+  router.delete("/api/tasks/:id", (req, res) => {
+    const deleted = store.deleteTask(req.params.id);
+    if (!deleted) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
+    io.emit("task:deleted", { id: req.params.id });
+    res.json({ ok: true, id: req.params.id });
+  });
+
+  router.post("/api/tasks/clear-cancelled", (_req, res) => {
+    const count = store.deleteCancelledTasks();
+    io.emit("tasks:purged", { count, status: "cancelled" });
+    res.json({ cleared: count });
+  });
+
   router.post("/api/tasks/cancel", (req, res) => {
     const parsed = z
       .object({
@@ -254,10 +313,74 @@ export function createRouter(store: Store, io: Server, scheduler: Scheduler) {
     }
     res.status(201).json(payload);
   });
-
   router.get("/api/execution-logs", (req, res) => {
     const taskId = typeof req.query.taskId === "string" ? req.query.taskId : undefined;
     res.json({ logs: store.listExecutionLogs(taskId) });
+  });
+
+  router.get("/api/execution-logs/export", (req, res) => {
+    const format = typeof req.query.format === "string" ? req.query.format.toLowerCase() : "json";
+    const taskId = typeof req.query.taskId === "string" ? req.query.taskId : undefined;
+    const logs = store.exportExecutionLogs(taskId);
+
+    if (format === "csv") {
+      const headers = ["id", "taskId", "threadId", "statusCode", "message", "userAgent", "locale", "region", "proxyRouteId", "durationMs", "createdAt"];
+      const csvRows = [headers.join(",")];
+      for (const log of logs) {
+        const row = [
+          log.id ?? "",
+          log.taskId ?? "",
+          log.threadId ?? "",
+          log.statusCode ?? "",
+          `"${String(log.message ?? "").replace(/"/g, '""')}"`,
+          `"${String(log.userAgent ?? "").replace(/"/g, '""')}"`,
+          log.locale ?? "",
+          log.region ?? "",
+          log.proxyRouteId ?? "",
+          log.durationMs ?? 0,
+          log.createdAt ?? ""
+        ];
+        csvRows.push(row.join(","));
+      }
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", 'attachment; filename="dplt_execution_logs.csv"');
+      res.send(csvRows.join("\n"));
+      return;
+    }
+
+    res.setHeader("Content-Type", "application/json");
+    res.setHeader("Content-Disposition", 'attachment; filename="dplt_execution_logs.json"');
+    res.json(logs);
+  });
+
+  router.post("/api/execution-logs/import", express.json({ limit: "50mb" }), (req, res) => {
+    try {
+      const body = req.body;
+      let logsToImport: any[] = [];
+      if (Array.isArray(body)) {
+        logsToImport = body;
+      } else if (body && Array.isArray(body.logs)) {
+        logsToImport = body.logs;
+      } else {
+        res.status(400).json({ error: "Payload must be a JSON array of logs or an object with a logs array" });
+        return;
+      }
+
+      const count = store.importExecutionLogs(logsToImport);
+      io.emit("execution:imported", { count });
+      res.json({ imported: count });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  router.get("/api/analytics", (req, res) => {
+    const startDate = typeof req.query.startDate === "string" && req.query.startDate.trim() ? req.query.startDate.trim() : undefined;
+    const endDate = typeof req.query.endDate === "string" && req.query.endDate.trim() ? req.query.endDate.trim() : undefined;
+    const startHour = typeof req.query.startHour === "string" && req.query.startHour.trim() !== "" ? parseInt(req.query.startHour, 10) : undefined;
+    const endHour = typeof req.query.endHour === "string" && req.query.endHour.trim() !== "" ? parseInt(req.query.endHour, 10) : undefined;
+
+    res.json(store.detailedAnalytics({ startDate, endDate, startHour, endHour }));
   });
 
   router.get("/api/stats", (_req, res) => {

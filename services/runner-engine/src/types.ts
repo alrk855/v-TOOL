@@ -17,6 +17,7 @@ export interface TaskRecord {
   dispatchIndex?: number | null;
   agentProfileIndex?: number | null;
   proxyRouteId?: string | null;
+  batchId?: string | null;
   /** Task-embedded proxy definition (overrides global pool lookup). */
   proxy?: ProxyRoute | null;
   /** Task-embedded workflow click config (overrides global env config). */

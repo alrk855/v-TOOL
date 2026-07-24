@@ -36,10 +36,24 @@ export function createDispatchScheduler(store: Store, io: Server) {
     const activeStart = input.activeHoursStart ?? 0;
     const activeEnd = input.activeHoursEnd ?? 24;
     const proxyPool = input.proxyRoutes ?? parseEnvProxyRoutes();
+    const batchId = `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 
-    // Build the schedule: assign each dispatch a time within active windows
+    // Query existing scheduled pending/queued tasks to interleave new batch seamlessly
+    const existingPendingTimes = store
+      .listPendingDispatches()
+      .map((t) => (t.scheduledAt ? new Date(t.scheduledAt).getTime() : 0))
+      .filter((t) => t > 0);
+
+    // Build the schedule: assign each dispatch a time within active windows respecting existing queue load
     const now = Date.now();
-    const scheduledTimes = buildDiurnalSchedule(now, input.targetVotes, input.totalHours, activeStart, activeEnd);
+    const scheduledTimes = buildDiurnalSchedule(
+      now,
+      input.targetVotes,
+      input.totalHours,
+      activeStart,
+      activeEnd,
+      existingPendingTimes
+    );
 
     // Assign proxies respecting per-proxy maxUsages limits
     const proxyAssignments = assignProxies(proxyPool, input.targetVotes, store);
@@ -48,7 +62,7 @@ export function createDispatchScheduler(store: Store, io: Server) {
       Array.from({ length: input.targetVotes }, (_, dispatchIndex) => {
         const scheduledAt = new Date(scheduledTimes[dispatchIndex]).toISOString();
         const assignedProxy = proxyAssignments[dispatchIndex] ?? null;
-        return buildDispatchTask(input, dispatchIndex, scheduledAt, assignedProxy);
+        return buildDispatchTask(input, dispatchIndex, scheduledAt, assignedProxy, batchId);
       })
     );
 
@@ -114,13 +128,14 @@ function buildDiurnalSchedule(
   count: number,
   totalHours: number,
   activeStart: number,
-  activeEnd: number
+  activeEnd: number,
+  existingTimes: number[] = []
 ): number[] {
   if (count <= 0) return [];
 
   const scheduleStart = nextActiveTimestamp(nowMs, activeStart, activeEnd);
   if (count === 1 || totalHours <= 0) {
-    return buildQuickStaggeredSchedule(scheduleStart, count, activeStart, activeEnd);
+    return buildQuickStaggeredSchedule(scheduleStart, count, activeStart, activeEnd, existingTimes);
   }
 
   const scheduleEnd = scheduleStart + totalHours * HOUR_MS;
@@ -128,7 +143,7 @@ function buildDiurnalSchedule(
   const availableMs = intervals.reduce((sum, interval) => sum + interval.end - interval.start, 0);
 
   if (availableMs <= 0) {
-    return buildQuickStaggeredSchedule(scheduleStart, count, activeStart, activeEnd);
+    return buildQuickStaggeredSchedule(scheduleStart, count, activeStart, activeEnd, existingTimes);
   }
 
   const slotMs = availableMs / count;
@@ -138,14 +153,20 @@ function buildDiurnalSchedule(
     return Math.floor(slotStart + slotMs * randomPoint);
   });
 
-  return offsets.map((offsetMs) => activeOffsetToTimestamp(intervals, offsetMs)).sort((a, b) => a - b);
+  const rawTimes = offsets.map((offsetMs) => activeOffsetToTimestamp(intervals, offsetMs)).sort((a, b) => a - b);
+  return enforceRealisticSpacing(rawTimes, activeStart, activeEnd, existingTimes);
 }
+
+const MIN_DISPATCH_GAP_MS = 120_000; // Minimum 2-minute gap between dispatches for realistic traffic
+const DISPATCH_JITTER_MIN_MS = 15_000; // +15s jitter
+const DISPATCH_JITTER_MAX_MS = 90_000; // +90s jitter
 
 function buildQuickStaggeredSchedule(
   startMs: number,
   count: number,
   activeStart: number,
-  activeEnd: number
+  activeEnd: number,
+  existingTimes: number[] = []
 ) {
   const times: number[] = [];
   let cursor = startMs;
@@ -153,10 +174,52 @@ function buildQuickStaggeredSchedule(
   for (let i = 0; i < count; i++) {
     cursor = nextActiveTimestamp(cursor, activeStart, activeEnd);
     times.push(cursor);
-    cursor += randomInt(QUICK_STAGGER_MIN_MS, QUICK_STAGGER_MAX_MS);
+    cursor += MIN_DISPATCH_GAP_MS + randomInt(DISPATCH_JITTER_MIN_MS, DISPATCH_JITTER_MAX_MS);
   }
 
-  return times;
+  return enforceRealisticSpacing(times, activeStart, activeEnd, existingTimes);
+}
+
+/**
+ * Ensures dispatches do not cluster in tight consecutive minutes.
+ * Also checks against existing pending/queued task timestamps across batches.
+ */
+function enforceRealisticSpacing(
+  timestamps: number[],
+  activeStart: number,
+  activeEnd: number,
+  existingTimes: number[] = []
+): number[] {
+  if (timestamps.length === 0) return [];
+
+  const existingSorted = [...existingTimes].sort((a, b) => a - b);
+  const result: number[] = [];
+
+  for (let i = 0; i < timestamps.length; i++) {
+    const prevInBatch = result.length > 0 ? result[result.length - 1] : 0;
+    let current = timestamps[i];
+
+    if (prevInBatch > 0) {
+      const minAllowed = prevInBatch + MIN_DISPATCH_GAP_MS + randomInt(DISPATCH_JITTER_MIN_MS, DISPATCH_JITTER_MAX_MS);
+      if (current < minAllowed) {
+        current = minAllowed;
+      }
+    }
+
+    // Check overlap with existing scheduled tasks across all batches
+    for (const extTime of existingSorted) {
+      if (Math.abs(current - extTime) < MIN_DISPATCH_GAP_MS) {
+        current = extTime + MIN_DISPATCH_GAP_MS + randomInt(DISPATCH_JITTER_MIN_MS, DISPATCH_JITTER_MAX_MS);
+      }
+    }
+
+    current = nextActiveTimestamp(current, activeStart, activeEnd);
+    result.push(current);
+    existingSorted.push(current);
+    existingSorted.sort((a, b) => a - b);
+  }
+
+  return result;
 }
 
 function buildActiveIntervals(
@@ -215,8 +278,6 @@ function nextActiveTimestamp(timestampMs: number, activeStart: number, activeEnd
     return localHourTimestamp(tomorrow, activeStart);
   }
 
-  // Overnight window, for example 22 -> 6. If the time is outside the window,
-  // it is between end and start, so today's start is next.
   return localHourTimestamp(t, activeStart);
 }
 
@@ -270,10 +331,6 @@ function localHourTimestamp(base: Date, hour: number) {
   return t.getTime();
 }
 
-/**
- * Assigns proxy routes to each dispatch index while respecting per-proxy maxUsages.
- * Iterates the pool in round-robin; skips entries that have reached their limit.
- */
 function assignProxies(
   pool: ProxyRouteDefinition[],
   count: number,
@@ -281,7 +338,6 @@ function assignProxies(
 ): Array<ProxyRouteDefinition | null> {
   if (pool.length === 0) return Array(count).fill(null);
 
-  // Build a live usage map including what is already in the DB
   const usageMap = new Map<string, number>();
   for (const proxy of pool) {
     usageMap.set(proxy.id, store.getProxyUsageCount(proxy.id));
@@ -290,18 +346,22 @@ function assignProxies(
   const result: Array<ProxyRouteDefinition | null> = [];
 
   for (let i = 0; i < count; i++) {
-    // Walk the pool until we find one under its limit (or exhaust all)
     let assigned: ProxyRouteDefinition | null = null;
     for (let attempt = 0; attempt < pool.length; attempt++) {
       const candidate = pool[(i + attempt) % pool.length];
       const currentUsage = usageMap.get(candidate.id) ?? 0;
-      const limit = candidate.maxUsages ?? Infinity;
+      const limit = candidate.maxUsages && candidate.maxUsages > 0 ? candidate.maxUsages : Infinity;
       if (currentUsage < limit) {
         usageMap.set(candidate.id, currentUsage + 1);
         assigned = candidate;
         break;
       }
     }
+
+    if (!assigned && pool.length > 0) {
+      assigned = pool[i % pool.length];
+    }
+
     result.push(assigned);
   }
 
@@ -312,7 +372,8 @@ function buildDispatchTask(
   input: ScheduleInput,
   dispatchIndex: number,
   scheduledAt: string,
-  proxy: ProxyRouteDefinition | null
+  proxy: ProxyRouteDefinition | null,
+  batchId: string
 ): CreateTaskInput {
   return {
     targetUrl: input.targetUrl,
@@ -327,7 +388,8 @@ function buildDispatchTask(
     agentProfileIndex: dispatchIndex % DEFAULT_AGENT_PROFILE_COUNT,
     proxyRouteId: proxy?.id ?? null,
     workflow: input.workflow ?? null,
-    proxy: proxy ?? null
+    proxy: proxy ?? null,
+    batchId
   };
 }
 

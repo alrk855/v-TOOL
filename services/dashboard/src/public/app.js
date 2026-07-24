@@ -20,6 +20,24 @@ const openTaskCenterBtn = $("openTaskCenterBtn");
 const closeTaskCenterBtn = $("closeTaskCenterBtn");
 const taskModalCount = $("taskModalCount");
 const taskGroupList = $("taskGroupList");
+const taskInspectorModal = $("taskInspectorModal");
+const closeInspectorBtn = $("closeInspectorBtn");
+const closeInspectorBackdrop = $("closeInspectorBackdrop");
+const inspectorStatus = $("inspectorStatus");
+const inspectorTaskId = $("inspectorTaskId");
+const inspectorContent = $("inspectorContent");
+const clearCancelledBtn = $("clearCancelledBtn");
+const clearCancelledInModalBtn = $("clearCancelledInModalBtn");
+const batchFilterSelect = $("batchFilterSelect");
+const openAnalyticsModalBtn = $("openAnalyticsModalBtn");
+const analyticsModal = $("analyticsModal");
+const closeAnalyticsBtn = $("closeAnalyticsBtn");
+const closeAnalyticsBackdrop = $("closeAnalyticsBackdrop");
+const analyticsContent = $("analyticsContent");
+const exportLogsJsonBtn = $("exportLogsJsonBtn");
+const exportLogsCsvBtn = $("exportLogsCsvBtn");
+const importLogsBtn = $("importLogsBtn");
+const importLogFileInput = $("importLogFileInput");
 const logsEl        = $("logs");
 const proxyPoolRows = $("proxyPoolRows");
 const addProxyBtn   = $("addProxyBtn");
@@ -43,6 +61,8 @@ const TASK_FILTER_LABELS = {
   all: "All"
 };
 let currentTaskFilter = "active";
+let currentBatchFilter = "all";
+let activeInspectedTaskId = null;
 
 // ── Tabs ──────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -87,6 +107,30 @@ socket.on("task:updated", (task) => {
   tasks.set(task.id, task);
   renderTasks();
   refreshStats();
+  if (activeInspectedTaskId === task.id) {
+    renderTaskInspector(task);
+  }
+});
+
+socket.on("task:deleted", ({ id }) => {
+  tasks.delete(id);
+  renderTasks();
+  refreshStats();
+  if (activeInspectedTaskId === id) {
+    closeTaskInspector();
+  }
+});
+
+socket.on("tasks:purged", ({ status }) => {
+  if (status === "cancelled") {
+    for (const [id, task] of tasks.entries()) {
+      if (task.status === "cancelled") {
+        tasks.delete(id);
+      }
+    }
+  }
+  renderTasks();
+  refreshStats();
 });
 
 socket.on("execution:logged", (payload) => {
@@ -96,6 +140,14 @@ socket.on("execution:logged", (payload) => {
     renderTasks();
   }
   refreshStats();
+});
+
+socket.on("execution:imported", ({ count }) => {
+  refreshStats();
+  if (analyticsModal && !analyticsModal.hidden) {
+    loadAndRenderAnalytics();
+  }
+  setFormMessage(`✓ ${count} execution log records imported successfully.`, "ok");
 });
 
 // ── Proxy pool ────────────────────────────────
@@ -330,7 +382,7 @@ function renderActiveTaskPreview(activeTasks) {
 
 function renderTaskPreviewRow(task) {
   return `
-    <article class="task-preview-row">
+    <article class="task-preview-row" data-inspect-task="${esc(task.id)}" style="cursor:pointer">
       <div class="task-preview-id">
         <code>${esc(task.id.slice(0, 8))}</code>
         <span class="status-badge s-${task.status}">${esc(task.status)}</span>
@@ -345,16 +397,18 @@ function renderTaskPreviewRow(task) {
 }
 
 function renderTaskCenter(allTasks, counts) {
-  const filtered = filterTasks(allTasks, currentTaskFilter);
+  updateBatchFilterDropdown(allTasks);
+  const filtered = filterTasks(allTasks, currentTaskFilter, currentBatchFilter);
   const label = TASK_FILTER_LABELS[currentTaskFilter] ?? "Tasks";
-  taskModalCount.textContent = `${label}: ${filtered.length} task${filtered.length !== 1 ? "s" : ""}`;
+  const batchLabel = currentBatchFilter !== "all" ? ` [Batch: ${currentBatchFilter.slice(0, 14)}]` : "";
+  taskModalCount.textContent = `${label}${batchLabel}: ${filtered.length} task${filtered.length !== 1 ? "s" : ""}`;
   updateTaskFilterButtons(counts, allTasks.length);
 
   if (!filtered.length) {
     taskGroupList.innerHTML = `
       <div class="task-empty-state task-empty-large">
         <strong>No ${esc(label.toLowerCase())} tasks</strong>
-        <span>Change the filter to inspect another group.</span>
+        <span>Change status or batch/queue filter to inspect another group.</span>
       </div>
     `;
     return;
@@ -374,16 +428,42 @@ function renderTaskCenter(allTasks, counts) {
   `).join("");
 }
 
+function updateBatchFilterDropdown(allTasks) {
+  if (!batchFilterSelect) return;
+  const batches = new Map();
+  for (const task of allTasks) {
+    const bId = task.batchId ?? "default";
+    batches.set(bId, (batches.get(bId) ?? 0) + 1);
+  }
+
+  const currentSelection = currentBatchFilter;
+  const optionsHtml = ['<option value="all">All Batches / Queues</option>'];
+  for (const [bId, count] of batches.entries()) {
+    const label = bId === "default" ? `Default Queue (${count})` : `Queue: ${bId.slice(0, 16)} (${count})`;
+    optionsHtml.push(`<option value="${esc(bId)}" ${bId === currentSelection ? "selected" : ""}>${esc(label)}</option>`);
+  }
+  batchFilterSelect.innerHTML = optionsHtml.join("");
+}
+
+if (batchFilterSelect) {
+  batchFilterSelect.addEventListener("change", () => {
+    currentBatchFilter = batchFilterSelect.value;
+    renderTasks();
+  });
+}
+
 function renderTaskCard(task) {
   const done = task.completedExecutions + task.failedExecutions;
   const pct = task.totalExecutions > 0 ? Math.min(100, Math.round((done / task.totalExecutions) * 100)) : 0;
   const canCancel = task.status === "pending" || task.status === "queued";
+  const batchBadge = task.batchId ? `<span class="step-pill ok" style="font-size:9px">Queue: ${esc(task.batchId.slice(0, 10))}</span>` : "";
 
   return `
-    <article class="task-card-row">
+    <article class="task-card-row" data-inspect-task="${esc(task.id)}" style="cursor:pointer">
       <div class="task-card-main">
         <div class="task-card-title">
           <code>${esc(task.id.slice(0, 8))}</code>
+          ${batchBadge}
           <span class="task-url" title="${esc(task.targetUrl)}">${esc(task.targetUrl)}</span>
         </div>
         <div class="task-card-meta">
@@ -398,7 +478,8 @@ function renderTaskCard(task) {
         </div>
         <span>${done}/${task.totalExecutions}</span>
       </div>
-      <div class="task-card-actions">
+      <div class="task-card-actions" onclick="event.stopPropagation()">
+        <button type="button" class="btn-secondary-small" data-inspect-task="${esc(task.id)}">Details</button>
         ${canCancel ? `<button type="button" class="btn-danger-small" data-cancel-task="${esc(task.id)}">Cancel</button>` : `<span class="muted-text">—</span>`}
       </div>
     </article>
@@ -412,10 +493,14 @@ function countTasksByStatus(items) {
   }, {});
 }
 
-function filterTasks(items, filter) {
-  if (filter === "all") return items;
-  if (filter === "active") return items.filter((task) => ACTIVE_STATUSES.includes(task.status));
-  return items.filter((task) => task.status === filter);
+function filterTasks(items, statusFilter, batchFilter = "all") {
+  let result = items;
+  if (batchFilter !== "all") {
+    result = result.filter((task) => (task.batchId ?? "default") === batchFilter);
+  }
+  if (statusFilter === "all") return result;
+  if (statusFilter === "active") return result.filter((task) => ACTIVE_STATUSES.includes(task.status));
+  return result.filter((task) => task.status === statusFilter);
 }
 
 function groupTasksForFilter(items, filter) {
@@ -773,6 +858,342 @@ async function confirmCancelPendingTasks() {
 cancelPendingBtn.addEventListener("click", confirmCancelPendingTasks);
 cancelPendingInModalBtn.addEventListener("click", confirmCancelPendingTasks);
 
+if (clearCancelledBtn) clearCancelledBtn.addEventListener("click", clearCancelledTasks);
+if (clearCancelledInModalBtn) clearCancelledInModalBtn.addEventListener("click", clearCancelledTasks);
+
+openTaskCenterBtn.addEventListener("click", () => openTaskCenter());
+closeTaskCenterBtn.addEventListener("click", closeTaskCenter);
+if (closeInspectorBtn) closeInspectorBtn.addEventListener("click", closeTaskInspector);
+if (closeInspectorBackdrop) closeInspectorBackdrop.addEventListener("click", closeTaskInspector);
+
+// ── Analytics Modal ───────────────────────────
+if (openAnalyticsModalBtn) {
+  openAnalyticsModalBtn.addEventListener("click", () => {
+    analyticsModal.hidden = false;
+    loadAndRenderAnalytics();
+  });
+}
+if (closeAnalyticsBtn) closeAnalyticsBtn.addEventListener("click", () => { analyticsModal.hidden = true; });
+if (closeAnalyticsBackdrop) closeAnalyticsBackdrop.addEventListener("click", () => { analyticsModal.hidden = true; });
+
+// ── Export Logs ───────────────────────────────
+if (exportLogsJsonBtn) {
+  exportLogsJsonBtn.addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = "/api/execution-logs/export?format=json";
+    a.download = "dplt_execution_logs.json";
+    a.click();
+  });
+}
+if (exportLogsCsvBtn) {
+  exportLogsCsvBtn.addEventListener("click", () => {
+    const a = document.createElement("a");
+    a.href = "/api/execution-logs/export?format=csv";
+    a.download = "dplt_execution_logs.csv";
+    a.click();
+  });
+}
+
+// ── Import Logs ───────────────────────────────
+if (importLogsBtn && importLogFileInput) {
+  importLogsBtn.addEventListener("click", () => importLogFileInput.click());
+
+  importLogFileInput.addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    importLogsBtn.disabled = true;
+    importLogsBtn.textContent = "Importing…";
+
+    try {
+      const text = await file.text();
+      let payload;
+
+      if (file.name.endsWith(".csv")) {
+        // Parse CSV into log-like objects
+        const lines = text.split("\n").filter(Boolean);
+        const headers = lines[0].split(",");
+        const rows = [];
+        for (let i = 1; i < lines.length; i++) {
+          const vals = lines[i].split(",");
+          const obj = {};
+          headers.forEach((h, idx) => { obj[h.trim()] = (vals[idx] ?? "").replace(/^"|"$/g, "").trim(); });
+          rows.push(obj);
+        }
+        payload = rows;
+      } else {
+        payload = JSON.parse(text);
+      }
+
+      const res = await fetch("/api/execution-logs/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Array.isArray(payload) ? payload : [payload])
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Import failed");
+      setFormMessage(`✓ Imported ${data.imported} records from ${file.name}`, "ok");
+      if (analyticsModal && !analyticsModal.hidden) loadAndRenderAnalytics();
+    } catch (err) {
+      setFormMessage(`✗ Import error: ${err.message}`, "error");
+    } finally {
+      importLogsBtn.disabled = false;
+      importLogsBtn.textContent = "⬆ Import Logs";
+      importLogFileInput.value = "";
+    }
+  });
+}
+
+taskModal.addEventListener("click", (event) => {
+  if (event.target.closest("[data-close-task-modal]")) closeTaskCenter();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    if (analyticsModal && !analyticsModal.hidden) {
+      analyticsModal.hidden = true;
+    } else if (!taskInspectorModal.hidden) {
+      closeTaskInspector();
+    } else if (!taskModal.hidden) {
+      closeTaskCenter();
+    }
+  }
+});
+
+// Delegate click events to open Task Inspector Modal
+document.addEventListener("click", (event) => {
+  const inspectTarget = event.target.closest("[data-inspect-task]");
+  if (inspectTarget && !event.target.closest("[data-cancel-task]")) {
+    const taskId = inspectTarget.dataset.inspectTask;
+    if (taskId) {
+      openTaskInspector(taskId);
+    }
+  }
+});
+
+// ── Task Inspector & Management ─────────────────
+function openTaskInspector(taskIdOrTask) {
+  const task = typeof taskIdOrTask === "string" ? tasks.get(taskIdOrTask) : taskIdOrTask;
+  if (!task) return;
+  activeInspectedTaskId = task.id;
+  renderTaskInspector(task);
+  taskInspectorModal.hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+function closeTaskInspector() {
+  activeInspectedTaskId = null;
+  taskInspectorModal.hidden = true;
+  if (taskModal.hidden) {
+    document.body.classList.remove("modal-open");
+  }
+}
+
+function renderTaskInspector(task) {
+  inspectorStatus.textContent = task.status;
+  inspectorStatus.className = `status-badge s-${task.status}`;
+  inspectorTaskId.textContent = task.id;
+
+  const scheduledTime = task.scheduledAt ? new Date(task.scheduledAt).getTime() : null;
+  const now = Date.now();
+  let timeCountdownStr = "Immediate / Queued";
+  if (scheduledTime) {
+    const diffMs = scheduledTime - now;
+    if (diffMs > 0) {
+      const min = Math.floor(diffMs / 60000);
+      const sec = Math.floor((diffMs % 60000) / 1000);
+      timeCountdownStr = `Fires in ${min}m ${sec}s (${fmtTime(task.scheduledAt)})`;
+    } else {
+      timeCountdownStr = `Scheduled for ${fmtTime(task.scheduledAt)} (${fmtDuration(Math.abs(diffMs))} ago)`;
+    }
+  }
+
+  const done = task.completedExecutions + task.failedExecutions;
+  const canCancel = task.status === "pending" || task.status === "queued" || task.status === "running";
+  const canRequeue = task.status === "completed" || task.status === "failed" || task.status === "cancelled";
+
+  const workflow = task.workflow ?? {};
+  const workflowSummaryStr = [
+    workflow.entrySelector ? `Entry: ${workflow.entrySelector}` : null,
+    workflow.targetAssetSelector ? `Target: ${workflow.targetAssetSelector}` : null,
+    workflow.finalActionSelector ? `Submit: ${workflow.finalActionSelector}` : null
+  ].filter(Boolean).join(" | ") || "Default workflow";
+
+  inspectorContent.innerHTML = `
+    <div class="inspector-card">
+      <div class="inspector-card-title">Target & Execution Progress</div>
+      <div class="inspector-grid">
+        <span class="inspector-label">Target URL:</span>
+        <span class="inspector-val"><a href="${esc(task.targetUrl)}" target="_blank" rel="noopener" style="color:var(--accent-primary)">${esc(task.targetUrl)} ↗</a></span>
+        
+        <span class="inspector-label">Schedule Window:</span>
+        <span class="inspector-val"><strong>${esc(timeCountdownStr)}</strong></span>
+
+        <span class="inspector-label">Executions:</span>
+        <span class="inspector-val">${done} / ${task.totalExecutions} (${task.completedExecutions} OK, ${task.failedExecutions} Failed)</span>
+
+        <span class="inspector-label">Assigned Proxy:</span>
+        <span class="inspector-val"><code>${esc(task.proxyRouteId ?? "no proxy assigned")}</code></span>
+        
+        <span class="inspector-label">Locales & Regions:</span>
+        <span class="inspector-val">${esc((task.locales ?? []).join(", "))} | ${esc((task.regions ?? []).join(", "))}</span>
+
+        <span class="inspector-label">Timestamps:</span>
+        <span class="inspector-val">Created ${fmtTime(task.createdAt)} | Updated ${fmtTime(task.updatedAt)}</span>
+      </div>
+    </div>
+
+    <!-- POSTPONE & RESCHEDULE CONTROL -->
+    <div class="inspector-card">
+      <div class="inspector-card-title">🕒 Postpone / Reschedule Task</div>
+      <p class="muted-text" style="font-size:12px;margin:0">Delay execution time to a future window:</p>
+      <div class="postpone-preset-row">
+        <button type="button" class="preset-btn" data-postpone-mins="15">+15 Minutes</button>
+        <button type="button" class="preset-btn" data-postpone-mins="30">+30 Minutes</button>
+        <button type="button" class="preset-btn" data-postpone-mins="60">+1 Hour</button>
+        <button type="button" class="preset-btn" data-postpone-mins="240">+4 Hours</button>
+        <button type="button" class="preset-btn" data-postpone-mins="1440">+24 Hours</button>
+      </div>
+      <div class="custom-datetime-row">
+        <label class="field-label-small">Or Set Date/Time:</label>
+        <input type="datetime-local" id="customSchedulePicker" />
+        <button type="button" class="btn-secondary-small" id="applyCustomScheduleBtn">Set Schedule</button>
+      </div>
+    </div>
+
+    <!-- WORKFLOW SELECTORS -->
+    <div class="inspector-card">
+      <div class="inspector-card-title">Workflow Selectors</div>
+      <div class="inspector-val" style="font-family:var(--font-mono);font-size:11.5px">${esc(workflowSummaryStr)}</div>
+    </div>
+
+    <!-- ACTIONS TOOLBAR -->
+    <div class="inspector-actions">
+      ${canRequeue ? `<button type="button" class="btn-primary" id="requeueTaskBtn">🔄 Re-Queue / Retry Task</button>` : ""}
+      ${canCancel ? `<button type="button" class="btn-danger-small" id="cancelInspectorTaskBtn">❌ Cancel Task</button>` : ""}
+      <button type="button" class="btn-secondary-small" id="deleteInspectorTaskBtn" style="color:var(--accent-fail)">🗑️ Delete Task</button>
+    </div>
+  `;
+
+  const content = inspectorContent;
+  content.querySelectorAll("[data-postpone-mins]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const mins = parseInt(btn.dataset.postponeMins, 10);
+      await postponeTask(task.id, { delayMinutes: mins });
+    });
+  });
+
+  const customPicker = $("customSchedulePicker");
+  const applyCustomBtn = $("applyCustomScheduleBtn");
+  if (customPicker && applyCustomBtn) {
+    applyCustomBtn.addEventListener("click", async () => {
+      if (!customPicker.value) return;
+      const iso = new Date(customPicker.value).toISOString();
+      await postponeTask(task.id, { scheduledAt: iso });
+    });
+  }
+
+  const requeueBtn = $("requeueTaskBtn");
+  if (requeueBtn) {
+    requeueBtn.addEventListener("click", async () => {
+      await requeueTask(task.id);
+    });
+  }
+
+  const cancelBtn = $("cancelInspectorTaskBtn");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", async () => {
+      await cancelTask(task.id);
+    });
+  }
+
+  const deleteBtn = $("deleteInspectorTaskBtn");
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", async () => {
+      if (window.confirm("Permanently delete this task and its logs?")) {
+        await deleteTask(task.id);
+      }
+    });
+  }
+}
+
+async function postponeTask(taskId, options) {
+  try {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/postpone`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options)
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const { task } = await res.json();
+    tasks.set(task.id, task);
+    renderTasks();
+    refreshStats();
+    setFormMessage(`✓ Postponed task ${task.id.slice(0, 8)} to ${fmtTime(task.scheduledAt)}.`, "ok");
+  } catch (err) {
+    setFormMessage("Postpone failed: " + (err instanceof Error ? err.message : String(err)), "err");
+  }
+}
+
+async function requeueTask(taskId) {
+  try {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/requeue`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const { task } = await res.json();
+    tasks.set(task.id, task);
+    renderTasks();
+    refreshStats();
+    setFormMessage(`✓ Task ${task.id.slice(0, 8)} re-queued.`, "ok");
+  } catch (err) {
+    setFormMessage("Re-queue failed: " + (err instanceof Error ? err.message : String(err)), "err");
+  }
+}
+
+async function deleteTask(taskId) {
+  try {
+    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+      method: "DELETE"
+    });
+    if (!res.ok) throw new Error(await res.text());
+    tasks.delete(taskId);
+    renderTasks();
+    refreshStats();
+    closeTaskInspector();
+    setFormMessage(`Deleted task ${taskId.slice(0, 8)}.`, "ok");
+  } catch (err) {
+    setFormMessage("Delete failed: " + (err instanceof Error ? err.message : String(err)), "err");
+  }
+}
+
+async function clearCancelledTasks() {
+  const cancelledCount = Array.from(tasks.values()).filter((t) => t.status === "cancelled").length;
+  if (cancelledCount === 0) {
+    setFormMessage("No cancelled tasks to clear.", "");
+    return;
+  }
+  if (!window.confirm(`Permanently purge ${cancelledCount} cancelled task${cancelledCount !== 1 ? "s" : ""} from database?`)) {
+    return;
+  }
+  try {
+    const res = await fetch("/api/tasks/clear-cancelled", { method: "POST" });
+    if (!res.ok) throw new Error(await res.text());
+    const { cleared } = await res.json();
+    for (const [id, task] of tasks.entries()) {
+      if (task.status === "cancelled") {
+        tasks.delete(id);
+      }
+    }
+    renderTasks();
+    refreshStats();
+    setFormMessage(`✓ Cleared ${cleared} cancelled tasks from database.`, "ok");
+  } catch (err) {
+    setFormMessage("Clear failed: " + (err instanceof Error ? err.message : String(err)), "err");
+  }
+}
+
 openTaskCenterBtn.addEventListener("click", () => openTaskCenter());
 closeTaskCenterBtn.addEventListener("click", closeTaskCenter);
 taskModal.addEventListener("click", (event) => {
@@ -892,3 +1313,406 @@ function setFormMessage(text, cls) {
   formMessage.textContent = text;
   formMessage.className   = "form-message " + cls;
 }
+
+// ══════════════════════════════════════════════════════════
+//   ANALYTICS & CHARTS
+// ══════════════════════════════════════════════════════════
+
+let currentAnalyticsFilter = {
+  preset: "all",
+  startDate: "",
+  endDate: "",
+  startHour: 0,
+  endHour: 23
+};
+
+function initAnalyticsFilterControls() {
+  const startHourEl = $("analyticsStartHour");
+  const endHourEl = $("analyticsEndHour");
+
+  if (startHourEl && startHourEl.options.length === 0) {
+    for (let h = 0; h < 24; h++) {
+      const val = String(h);
+      const label = `${String(h).padStart(2, "0")}:00`;
+      startHourEl.add(new Option(label, val));
+      endHourEl.add(new Option(label, val));
+    }
+    startHourEl.value = "0";
+    endHourEl.value = "23";
+  }
+
+  // Bind presets
+  document.querySelectorAll(".analytics-preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".analytics-preset-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      applyPresetFilter(btn.dataset.preset);
+    });
+  });
+
+  const applyBtn = $("applyAnalyticsFilterBtn");
+  const resetBtn = $("resetAnalyticsFilterBtn");
+
+  if (applyBtn) {
+    applyBtn.addEventListener("click", () => {
+      currentAnalyticsFilter.preset = "custom";
+      document.querySelectorAll(".analytics-preset-btn").forEach((b) => b.classList.remove("active"));
+      currentAnalyticsFilter.startDate = $("analyticsStartDate").value;
+      currentAnalyticsFilter.endDate = $("analyticsEndDate").value;
+      currentAnalyticsFilter.startHour = parseInt($("analyticsStartHour").value || "0", 10);
+      currentAnalyticsFilter.endHour = parseInt($("analyticsEndHour").value || "23", 10);
+      loadAndRenderAnalytics();
+    });
+  }
+
+  if (resetBtn) {
+    resetBtn.addEventListener("click", () => {
+      applyPresetFilter("all");
+    });
+  }
+}
+
+function applyPresetFilter(preset) {
+  currentAnalyticsFilter.preset = preset;
+  const now = new Date();
+  const startInput = $("analyticsStartDate");
+  const endInput = $("analyticsEndDate");
+  const startHourEl = $("analyticsStartHour");
+  const endHourEl = $("analyticsEndHour");
+
+  if (preset === "all") {
+    currentAnalyticsFilter.startDate = "";
+    currentAnalyticsFilter.endDate = "";
+    currentAnalyticsFilter.startHour = 0;
+    currentAnalyticsFilter.endHour = 23;
+    if (startInput) startInput.value = "";
+    if (endInput) endInput.value = "";
+  } else if (preset === "24h") {
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    currentAnalyticsFilter.startDate = yesterday.toISOString().slice(0, 10);
+    currentAnalyticsFilter.endDate = now.toISOString().slice(0, 10);
+    if (startInput) startInput.value = currentAnalyticsFilter.startDate;
+    if (endInput) endInput.value = currentAnalyticsFilter.endDate;
+  } else if (preset === "7d") {
+    const d7 = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    currentAnalyticsFilter.startDate = d7.toISOString().slice(0, 10);
+    currentAnalyticsFilter.endDate = now.toISOString().slice(0, 10);
+    if (startInput) startInput.value = currentAnalyticsFilter.startDate;
+    if (endInput) endInput.value = currentAnalyticsFilter.endDate;
+  } else if (preset === "30d") {
+    const d30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    currentAnalyticsFilter.startDate = d30.toISOString().slice(0, 10);
+    currentAnalyticsFilter.endDate = now.toISOString().slice(0, 10);
+    if (startInput) startInput.value = currentAnalyticsFilter.startDate;
+    if (endInput) endInput.value = currentAnalyticsFilter.endDate;
+  }
+
+  if (startHourEl) startHourEl.value = "0";
+  if (endHourEl) endHourEl.value = "23";
+  currentAnalyticsFilter.startHour = 0;
+  currentAnalyticsFilter.endHour = 23;
+
+  loadAndRenderAnalytics();
+}
+
+async function loadAndRenderAnalytics() {
+  if (!analyticsContent) return;
+  initAnalyticsFilterControls();
+
+  analyticsContent.innerHTML = `
+    <div class="task-empty-state" style="padding:40px">
+      <strong>Loading analytics…</strong>
+    </div>`;
+
+  try {
+    const params = new URLSearchParams();
+    if (currentAnalyticsFilter.startDate) params.set("startDate", currentAnalyticsFilter.startDate);
+    if (currentAnalyticsFilter.endDate) params.set("endDate", currentAnalyticsFilter.endDate);
+    if (typeof currentAnalyticsFilter.startHour === "number") params.set("startHour", String(currentAnalyticsFilter.startHour));
+    if (typeof currentAnalyticsFilter.endHour === "number") params.set("endHour", String(currentAnalyticsFilter.endHour));
+
+    const url = "/api/analytics" + (params.toString() ? "?" + params.toString() : "");
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderAnalyticsContent(data);
+  } catch (err) {
+    analyticsContent.innerHTML = `
+      <div class="task-empty-state" style="padding:40px">
+        <strong>Failed to load analytics: ${esc(err.message)}</strong>
+      </div>`;
+  }
+}
+
+function renderAnalyticsContent(d) {
+  if (!analyticsContent) return;
+
+  const successRate = d.effectiveSuccessRate ?? 0;
+  const rateColor = successRate >= 80 ? "ok" : successRate >= 50 ? "warn" : "fail";
+  const avgDurStr = d.avgDurationMs ? fmtDuration(d.avgDurationMs) : "—";
+
+  analyticsContent.innerHTML = `
+    <!-- KPI Summary Strip -->
+    <div class="analytics-kpi-grid">
+      <div class="analytics-kpi-card ok">
+        <span class="analytics-kpi-num">${d.effectiveCompletedRuns ?? 0}</span>
+        <span class="analytics-kpi-label">Effective Runs<br><small style="font-size:9px;color:var(--text-muted)">Success + Timeout</small></span>
+      </div>
+      <div class="analytics-kpi-card ok">
+        <span class="analytics-kpi-num">${d.totalCommitClicks ?? 0}</span>
+        <span class="analytics-kpi-label">Total Clicks / Submits</span>
+      </div>
+      <div class="analytics-kpi-card warn">
+        <span class="analytics-kpi-num">${d.timeoutRuns ?? 0}</span>
+        <span class="analytics-kpi-label">Timeouts<br><small style="font-size:9px;color:var(--text-muted)">Counted as completed</small></span>
+      </div>
+      <div class="analytics-kpi-card fail">
+        <span class="analytics-kpi-num">${d.hardFailedRuns ?? 0}</span>
+        <span class="analytics-kpi-label">Hard Failures</span>
+      </div>
+      <div class="analytics-kpi-card ${rateColor}">
+        <span class="analytics-kpi-num">${successRate}%</span>
+        <span class="analytics-kpi-label">Effective Success Rate</span>
+      </div>
+      <div class="analytics-kpi-card">
+        <span class="analytics-kpi-num">${d.totalRuns ?? 0}</span>
+        <span class="analytics-kpi-label">Total Executions</span>
+      </div>
+    </div>
+
+    <!-- Daily Chart -->
+    ${renderDailyBarChart(d.dailySeries ?? [])}
+
+    <!-- Hourly Heatmap -->
+    ${renderHourlyChart(d.hourlyStats ?? [])}
+
+    <!-- Workflow Funnel -->
+    ${renderWorkflowFunnel(d.workflowSteps, d.totalRuns)}
+
+    <!-- Proxy Breakdown -->
+    ${renderProxyTable(d.proxyStats ?? [])}
+
+    <!-- Daily Detail Table -->
+    ${renderDailyTable(d.dailySeries ?? [])}
+
+    <!-- Export Actions -->
+    <div style="display:flex;gap:10px;margin-top:4px">
+      <button type="button" class="btn-secondary-small" id="analyticsExportJsonBtn">⬇ Export Logs JSON</button>
+      <button type="button" class="btn-secondary-small" id="analyticsExportCsvBtn">⬇ Export Logs CSV</button>
+    </div>
+  `;
+
+  // Bind inline export buttons
+  const ejBtn = analyticsContent.querySelector("#analyticsExportJsonBtn");
+  const ecBtn = analyticsContent.querySelector("#analyticsExportCsvBtn");
+  if (ejBtn) ejBtn.addEventListener("click", () => { const a = document.createElement("a"); a.href = "/api/execution-logs/export?format=json"; a.download = "dplt_logs.json"; a.click(); });
+  if (ecBtn) ecBtn.addEventListener("click", () => { const a = document.createElement("a"); a.href = "/api/execution-logs/export?format=csv"; a.download = "dplt_logs.csv"; a.click(); });
+}
+
+function renderDailyBarChart(daily) {
+  if (!daily.length) {
+    return `<div class="analytics-chart-section"><div class="chart-title">Daily Overview</div>
+      <div class="task-empty-state" style="padding:24px">No daily data yet</div></div>`;
+  }
+
+  const maxClicks = Math.max(1, ...daily.map((d) => d.totalRuns));
+  const BAR_HEIGHT = 160;
+
+  const bars = daily.map((d) => {
+    const clickH  = Math.round((d.commitClicks / maxClicks) * BAR_HEIGHT);
+    const timeH   = Math.round((d.timeoutRuns / maxClicks) * BAR_HEIGHT);
+    const failH   = Math.round((d.hardFailedRuns / maxClicks) * BAR_HEIGHT);
+    const totalH  = Math.max(clickH + timeH + failH, d.totalRuns > 0 ? 4 : 0);
+
+    const shortDate = d.date.slice(5); // MM-DD
+    return `
+      <div class="bar-column" title="${esc(d.date)} — ${d.totalRuns} runs, ${d.commitClicks} clicks, ${d.timeoutRuns} timeouts, ${d.hardFailedRuns} hard fails">
+        <span class="bar-val">${d.commitClicks}</span>
+        <div class="bar-stack" style="height:${totalH}px">
+          <span class="bar-segment-clicks" style="height:${clickH}px" title="Clicks: ${d.commitClicks}"></span>
+          <span class="bar-segment-timeouts" style="height:${timeH}px" title="Timeouts: ${d.timeoutRuns}"></span>
+          <span class="bar-segment-fails" style="height:${failH}px" title="Hard Fails: ${d.hardFailedRuns}"></span>
+        </div>
+        <span class="bar-label">${esc(shortDate)}</span>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="analytics-chart-section">
+      <div class="chart-title">
+        <span>Daily Execution Breakdown</span>
+        <div style="display:flex;gap:12px;font-size:11px;font-weight:600">
+          <span style="color:var(--accent-ok)">■ Clicks</span>
+          <span style="color:var(--accent-warn)">■ Timeouts</span>
+          <span style="color:var(--accent-fail)">■ Hard Fails</span>
+        </div>
+      </div>
+      <div class="bar-chart-container" style="height:${BAR_HEIGHT + 48}px">
+        ${bars}
+      </div>
+    </div>`;
+}
+
+function renderHourlyChart(hourly) {
+  if (!hourly || !hourly.length) return "";
+  const maxRuns = Math.max(1, ...hourly.map((h) => h.totalRuns));
+  const BAR_H = 90;
+
+  const bars = hourly.map((h) => {
+    const clickH = Math.round((h.commitClicks / maxRuns) * BAR_H);
+    const timeoH = Math.round((h.timeouts / maxRuns) * BAR_H);
+    const failH  = Math.round((h.hardFails / maxRuns) * BAR_H);
+    const totalH = Math.max(clickH + timeoH + failH, h.totalRuns > 0 ? 3 : 0);
+    return `
+      <div class="bar-column" title="${h.hour.toString().padStart(2, "0")}:00 — ${h.totalRuns} total, ${h.commitClicks} clicks">
+        <div class="bar-stack" style="height:${totalH}px;min-width:18px;max-width:22px">
+          <span class="bar-segment-clicks" style="height:${clickH}px"></span>
+          <span class="bar-segment-timeouts" style="height:${timeoH}px"></span>
+          <span class="bar-segment-fails" style="height:${failH}px"></span>
+        </div>
+        <span class="bar-label">${h.hour.toString().padStart(2,"0")}</span>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="analytics-chart-section">
+      <div class="chart-title">Hourly Activity Distribution</div>
+      <div class="bar-chart-container" style="height:${BAR_H + 40}px;gap:4px">
+        ${bars}
+      </div>
+    </div>`;
+}
+
+function renderWorkflowFunnel(steps, total) {
+  if (!steps) return "";
+  const stages = [
+    { key: "entry",     label: "Entry / Navigation" },
+    { key: "selection", label: "Target Selection" },
+    { key: "commit",    label: "Submit / Click" }
+  ];
+
+  const rows = stages.map(({ key, label }) => {
+    const s = steps[key] ?? { matched: 0, failed: 0, skipped: 0, total: 0 };
+    const rate = s.total > 0 ? Math.round((s.matched / s.total) * 100) : 0;
+    const barColor = rate >= 80 ? "var(--accent-ok)" : rate >= 50 ? "var(--accent-warn)" : "var(--accent-fail)";
+    return `
+      <tr>
+        <td style="padding:8px 14px;color:var(--text-primary);font-weight:600">${esc(label)}</td>
+        <td style="padding:8px 14px;color:var(--accent-ok)">${s.matched}</td>
+        <td style="padding:8px 14px;color:var(--accent-warn)">${s.skipped}</td>
+        <td style="padding:8px 14px;color:var(--accent-fail)">${s.failed}</td>
+        <td style="padding:8px 14px">${s.total}</td>
+        <td style="padding:8px 14px;min-width:140px">
+          <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:8px;overflow:hidden">
+            <div style="background:${barColor};width:${rate}%;height:100%;transition:width 0.4s ease"></div>
+          </div>
+          <small style="color:var(--text-muted)">${rate}% success</small>
+        </td>
+      </tr>`;
+  }).join("");
+
+  return `
+    <div class="analytics-chart-section">
+      <div class="chart-title">Workflow Stage Funnel</div>
+      <div class="analytics-table-wrap">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:rgba(255,255,255,0.03);color:var(--text-muted);font-size:11px">
+              <th style="padding:8px 14px;text-align:left">Stage</th>
+              <th style="padding:8px 14px;text-align:left">Matched</th>
+              <th style="padding:8px 14px;text-align:left">Skipped</th>
+              <th style="padding:8px 14px;text-align:left">Failed</th>
+              <th style="padding:8px 14px;text-align:left">Total</th>
+              <th style="padding:8px 14px;text-align:left">Rate</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderProxyTable(proxyStats) {
+  if (!proxyStats.length) return "";
+  const sorted = [...proxyStats].sort((a, b) => b.total - a.total);
+
+  const rows = sorted.map((p) => {
+    const clickRate = p.total > 0 ? Math.round((p.clicks / p.total) * 100) : 0;
+    const barColor = clickRate >= 70 ? "var(--accent-ok)" : clickRate >= 40 ? "var(--accent-warn)" : "var(--accent-fail)";
+    return `
+      <tr>
+        <td style="padding:8px 14px;font-family:var(--font-mono);font-size:11px;color:var(--accent-cyan)">${esc(p.proxyRouteId)}</td>
+        <td style="padding:8px 14px">${p.total}</td>
+        <td style="padding:8px 14px;color:var(--accent-ok)">${p.clicks}</td>
+        <td style="padding:8px 14px;color:var(--accent-warn)">${p.timeouts}</td>
+        <td style="padding:8px 14px;color:var(--accent-fail)">${p.fails}</td>
+        <td style="padding:8px 14px;min-width:120px">
+          <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:7px;overflow:hidden">
+            <div style="background:${barColor};width:${clickRate}%;height:100%"></div>
+          </div>
+          <small style="color:var(--text-muted)">${clickRate}%</small>
+        </td>
+      </tr>`;
+  }).join("");
+
+  return `
+    <div class="analytics-chart-section">
+      <div class="chart-title">Proxy Performance Breakdown</div>
+      <div class="analytics-table-wrap">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:rgba(255,255,255,0.03);color:var(--text-muted);font-size:11px">
+              <th style="padding:8px 14px;text-align:left">Proxy</th>
+              <th style="padding:8px 14px;text-align:left">Total</th>
+              <th style="padding:8px 14px;text-align:left">Clicks</th>
+              <th style="padding:8px 14px;text-align:left">Timeouts</th>
+              <th style="padding:8px 14px;text-align:left">Hard Fails</th>
+              <th style="padding:8px 14px;text-align:left">Click Rate</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderDailyTable(daily) {
+  if (!daily.length) return "";
+  const rows = [...daily].reverse().map((d) => {
+    const rateColor = d.effectiveSuccessRate >= 80 ? "var(--accent-ok)" : d.effectiveSuccessRate >= 50 ? "var(--accent-warn)" : "var(--accent-fail)";
+    return `
+      <tr>
+        <td style="padding:7px 14px;font-family:var(--font-mono);font-size:11px">${esc(d.date)}</td>
+        <td style="padding:7px 14px">${d.totalRuns}</td>
+        <td style="padding:7px 14px;color:var(--accent-ok)">${d.effectiveCompletedRuns}</td>
+        <td style="padding:7px 14px;color:var(--accent-ok)">${d.commitClicks}</td>
+        <td style="padding:7px 14px;color:var(--accent-warn)">${d.timeoutRuns}</td>
+        <td style="padding:7px 14px;color:var(--accent-fail)">${d.hardFailedRuns}</td>
+        <td style="padding:7px 14px;color:${rateColor};font-weight:700">${d.effectiveSuccessRate}%</td>
+        <td style="padding:7px 14px;color:var(--text-muted)">${d.avgDurationMs ? fmtDuration(d.avgDurationMs) : "—"}</td>
+      </tr>`;
+  }).join("");
+
+  return `
+    <div class="analytics-chart-section">
+      <div class="chart-title">Daily Detail Table</div>
+      <div class="analytics-table-wrap">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:rgba(255,255,255,0.03);color:var(--text-muted);font-size:11px">
+              <th style="padding:7px 14px;text-align:left">Date</th>
+              <th style="padding:7px 14px;text-align:left">Total</th>
+              <th style="padding:7px 14px;text-align:left">Effective OK</th>
+              <th style="padding:7px 14px;text-align:left">Clicks</th>
+              <th style="padding:7px 14px;text-align:left">Timeouts</th>
+              <th style="padding:7px 14px;text-align:left">Hard Fails</th>
+              <th style="padding:7px 14px;text-align:left">Rate</th>
+              <th style="padding:7px 14px;text-align:left">Avg Duration</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+

@@ -23,6 +23,10 @@
         </div>
       </div>
       <div class="topbar-right">
+        <button class="btn-primary" id="openAnalyticsModalBtn" style="gap:6px">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none"><path d="M2 13h12M3 10l3-4 3 2 4-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Analytics &amp; Charts
+        </button>
         <button class="btn-secondary" id="launchChromeBtn" style="border-color:var(--accent-cyan);color:var(--accent-cyan)">
           Launch Debug Chrome
         </button>
@@ -266,6 +270,7 @@
             <div class="table-actions">
               <span class="table-count" id="taskCount">0 tasks</span>
               <button type="button" class="btn-secondary" id="openTaskCenterBtn">Open Task Center</button>
+              <button type="button" class="btn-secondary-small" id="clearCancelledBtn" title="Purge all cancelled tasks from database">Clear Cancelled</button>
               <button type="button" class="btn-danger-small" id="cancelPendingBtn">Cancel Queue</button>
             </div>
           </div>
@@ -294,17 +299,52 @@
                 <button type="button" class="task-filter-btn" data-task-filter="cancelled">Cancelled</button>
                 <button type="button" class="task-filter-btn" data-task-filter="all">All</button>
               </div>
-              <button type="button" class="btn-danger-small" id="cancelPendingInModalBtn">Cancel Queue</button>
+              <div style="display:flex;gap:8px;align-items:center">
+                <select id="batchFilterSelect" class="task-batch-select" title="Filter by Simulation Batch / Queue">
+                  <option value="all">All Batches / Queues</option>
+                </select>
+                <button type="button" class="btn-secondary-small" id="clearCancelledInModalBtn">Clear Cancelled</button>
+                <button type="button" class="btn-danger-small" id="cancelPendingInModalBtn">Cancel Queue</button>
+              </div>
             </div>
             <div class="task-group-list" id="taskGroupList"></div>
           </section>
         </div>
 
+        <!-- ══════════ TASK INSPECTOR & EDITOR MODAL ══════════ -->
+        <div class="task-modal" id="taskInspectorModal" hidden>
+          <div class="task-modal-backdrop" id="closeInspectorBackdrop"></div>
+          <section class="task-window task-inspector-window" role="dialog" aria-modal="true" aria-labelledby="inspectorTitle">
+            <div class="task-window-header">
+              <div>
+                <div class="inspector-badge-row">
+                  <span class="status-badge" id="inspectorStatus">pending</span>
+                  <code id="inspectorTaskId">00000000</code>
+                </div>
+                <h2 class="card-title" id="inspectorTitle" style="margin-top:4px">Task Details</h2>
+              </div>
+              <button type="button" class="btn-icon-remove" id="closeInspectorBtn" title="Close details">✕</button>
+            </div>
+            
+            <div class="inspector-body" id="inspectorContent">
+              <!-- Content populated dynamically by app.js -->
+            </div>
+          </section>
+        </div>
+
         <!-- Execution logs -->
         <section class="card">
-          <div class="card-header" style="align-items: center;">
+          <div class="card-header" style="align-items: center; flex-wrap: wrap; gap: 8px;">
             <h2 class="card-title" style="margin-bottom: 0;">Execution Logs</h2>
-            <div class="log-filters" style="display:flex;gap:8px;margin-left:auto;margin-right:16px">
+            
+            <div style="display:flex;gap:6px;align-items:center;margin-left:auto">
+              <button type="button" class="btn-secondary-small" id="exportLogsJsonBtn" title="Export logs as JSON">⬇ Export JSON</button>
+              <button type="button" class="btn-secondary-small" id="exportLogsCsvBtn" title="Export logs as CSV spreadsheet">⬇ Export CSV</button>
+              <button type="button" class="btn-secondary-small" id="importLogsBtn" title="Import log file from another device">⬆ Import Logs</button>
+              <input type="file" id="importLogFileInput" accept=".json,.csv" hidden />
+            </div>
+
+            <div class="log-filters" style="display:flex;gap:8px;margin-left:8px">
               <button type="button" class="btn-filter active" data-filter="all">All</button>
               <button type="button" class="btn-filter" data-filter="completed">Success</button>
               <button type="button" class="btn-filter" data-filter="failed">Failed</button>
@@ -313,6 +353,56 @@
           </div>
           <div id="logs" class="logs"></div>
         </section>
+
+        <!-- ══════════ ANALYTICS & TELEMETRY MODAL ══════════ -->
+        <div class="task-modal" id="analyticsModal" hidden>
+          <div class="task-modal-backdrop" id="closeAnalyticsBackdrop"></div>
+          <section class="task-window analytics-window" role="dialog" aria-modal="true" aria-labelledby="analyticsTitle">
+            <div class="task-window-header" style="flex-wrap: wrap; gap: 12px;">
+              <div>
+                <h2 class="card-title" id="analyticsTitle">Detailed Telemetry &amp; Interactive Analytics</h2>
+                <p class="task-window-subtitle">Historical performance trends, daily click breakdowns, and stage funnel analytics</p>
+              </div>
+              <button type="button" class="btn-icon-remove" id="closeAnalyticsBtn" title="Close analytics">✕</button>
+            </div>
+
+            <!-- ANALYTICS FILTER TOOLBAR -->
+            <div class="analytics-filter-toolbar" style="padding: 10px 16px; background: var(--bg-card-alt); border-bottom: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;">
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <span style="font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase">Presets:</span>
+                <button type="button" class="btn-filter analytics-preset-btn active" data-preset="all">All Time</button>
+                <button type="button" class="btn-filter analytics-preset-btn" data-preset="24h">24h</button>
+                <button type="button" class="btn-filter analytics-preset-btn" data-preset="7d">7 Days</button>
+                <button type="button" class="btn-filter analytics-preset-btn" data-preset="30d">30 Days</button>
+              </div>
+
+              <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                <div style="display:flex;gap:4px;align-items:center">
+                  <label for="analyticsStartDate" style="font-size:11px;color:var(--text-muted);font-weight:600">From:</label>
+                  <input type="date" id="analyticsStartDate" class="task-batch-select" style="padding:3px 6px;font-size:11px" />
+                </div>
+                <div style="display:flex;gap:4px;align-items:center">
+                  <label for="analyticsEndDate" style="font-size:11px;color:var(--text-muted);font-weight:600">To:</label>
+                  <input type="date" id="analyticsEndDate" class="task-batch-select" style="padding:3px 6px;font-size:11px" />
+                </div>
+
+                <div style="display:flex;gap:4px;align-items:center">
+                  <label style="font-size:11px;color:var(--text-muted);font-weight:600">Hours:</label>
+                  <select id="analyticsStartHour" class="task-batch-select" style="padding:3px 6px;font-size:11px"></select>
+                  <span style="font-size:11px;color:var(--text-muted)">to</span>
+                  <select id="analyticsEndHour" class="task-batch-select" style="padding:3px 6px;font-size:11px"></select>
+                </div>
+
+                <button type="button" class="btn-secondary-small" id="applyAnalyticsFilterBtn">Apply Filter</button>
+                <button type="button" class="btn-ghost" id="resetAnalyticsFilterBtn" style="font-size:11px">Reset</button>
+              </div>
+            </div>
+
+            <div class="analytics-body" id="analyticsContent">
+              <!-- Dynamically populated by app.js -->
+            </div>
+          </section>
+        </div>
 
       </div>
     </main>
