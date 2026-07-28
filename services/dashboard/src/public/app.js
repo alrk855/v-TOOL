@@ -645,6 +645,43 @@ function renderStats(stats) {
       </div>
       <span class="proxy-usage-count">${usages}×</span>
     </div>`).join("");
+
+  fetchAndRenderProxyStats();
+}
+
+async function fetchAndRenderProxyStats() {
+  try {
+    const res = await fetch("/api/proxy-stats");
+    if (!res.ok) return;
+    const data = await res.json();
+
+    const routeCountEl = $("uniqueProxyRouteCount");
+    const hostCountEl = $("uniqueProxyHostCount");
+    const listEl = $("proxyIpUsageList");
+
+    if (routeCountEl) routeCountEl.textContent = data.uniqueRouteIds ?? 0;
+    if (hostCountEl) hostCountEl.textContent = data.uniqueHosts ?? 0;
+
+    if (listEl) {
+      const rows = data.rows ?? [];
+      if (rows.length === 0) {
+        listEl.innerHTML = `<p class="muted-text">No proxy data yet.</p>`;
+      } else {
+        const maxTasks = Math.max(1, ...rows.map((r) => r.taskCount));
+        listEl.innerHTML = rows.map((r) => `
+          <div class="failure-row" style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
+            <div>
+              <code style="font-size:10px;color:var(--accent-cyan)">${esc(r.proxyRouteId)}</code>
+              <span class="failure-message" style="font-size:10px;color:var(--text-muted)"> — ${esc(r.host)}</span>
+            </div>
+            <span style="font-size:11px;color:var(--text-muted)">${r.logCount} exec</span>
+            <span style="font-size:11px;color:var(--accent-ok)">${r.taskCount} tasks</span>
+          </div>`).join("");
+      }
+    }
+  } catch {
+    // silently ignore
+  }
 }
 
 function renderRunSummary(summary = {}) {

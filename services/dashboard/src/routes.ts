@@ -387,6 +387,10 @@ export function createRouter(store: Store, io: Server, scheduler: Scheduler) {
     res.json(store.stats());
   });
 
+  router.get("/api/proxy-stats", (_req, res) => {
+    res.json(store.uniqueProxyStats());
+  });
+
   return router;
 }
 

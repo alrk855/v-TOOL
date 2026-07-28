@@ -834,6 +834,7 @@ tr:hover td { background: rgba(255,255,255,0.018); }
 
 .overview-metric.accent-ok .overview-value { color: var(--accent-ok); }
 .overview-metric.accent-fail .overview-value { color: var(--accent-fail); }
+.overview-metric.accent-cyan .overview-value { color: var(--accent-cyan); }
 
 .workflow-summary {
   display: grid;

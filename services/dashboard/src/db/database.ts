@@ -363,6 +363,57 @@ export function openDatabase(databasePath: string) {
 
     detailedAnalytics(filter?: AnalyticsFilter) {
       return buildDetailedAnalytics(db, filter);
+    },
+
+    uniqueProxyStats() {
+      // Unique proxy route IDs used across all non-cancelled tasks
+      const byRouteId = db
+        .prepare(`
+          SELECT
+            proxy_route_id AS proxyRouteId,
+            proxy_json AS proxyJson,
+            COUNT(*) AS taskCount
+          FROM tasks
+          WHERE proxy_route_id IS NOT NULL AND status NOT IN ('cancelled')
+          GROUP BY proxy_route_id
+          ORDER BY taskCount DESC
+        `)
+        .all() as Array<{ proxyRouteId: string; proxyJson: string | null; taskCount: number }>;
+
+      // Unique log-level proxy_route_id usages (executions, not just tasks)
+      const byLogRouteId = db
+        .prepare(`
+          SELECT proxy_route_id AS proxyRouteId, COUNT(*) AS logCount
+          FROM execution_logs
+          WHERE proxy_route_id IS NOT NULL AND proxy_route_id != ''
+          GROUP BY proxy_route_id
+          ORDER BY logCount DESC
+        `)
+        .all() as Array<{ proxyRouteId: string; logCount: number }>;
+
+      const logCountMap = new Map(byLogRouteId.map((r) => [r.proxyRouteId, r.logCount]));
+
+      const rows = byRouteId.map((r) => {
+        let host = "—";
+        try {
+          const parsed = r.proxyJson ? JSON.parse(r.proxyJson) : null;
+          if (parsed?.server) {
+            // Extract just the host:port, strip the protocol
+            host = parsed.server.replace(/^https?:\/\//, "");
+          }
+        } catch { /* ignore */ }
+        return {
+          proxyRouteId: r.proxyRouteId,
+          host,
+          taskCount: r.taskCount,
+          logCount: logCountMap.get(r.proxyRouteId) ?? 0
+        };
+      });
+
+      const uniqueRouteIds = new Set(rows.map((r) => r.proxyRouteId)).size;
+      const uniqueHosts = new Set(rows.map((r) => r.host).filter((h) => h !== "—")).size;
+
+      return { uniqueRouteIds, uniqueHosts, rows };
     }
   };
 }
