@@ -87,8 +87,103 @@ export function createDispatchScheduler(store: Store, io: Server) {
   }
 
   function restorePendingDispatches() {
-    for (const task of store.listPendingDispatches()) {
+    const now = Date.now();
+    const allPending = store.listPendingDispatches();
+
+    // Split into future tasks (arm as-is) and overdue tasks (need rescheduling)
+    const futureTasks: TaskRecord[] = [];
+    const overdueTasks: TaskRecord[] = [];
+
+    for (const task of allPending) {
+      const scheduledMs = task.scheduledAt ? new Date(task.scheduledAt).getTime() : 0;
+      if (scheduledMs > now) {
+        futureTasks.push(task);
+      } else {
+        overdueTasks.push(task);
+      }
+    }
+
+    // Arm future tasks normally
+    for (const task of futureTasks) {
       armDispatchTimer(task);
+    }
+
+    // Reschedule overdue tasks: group by batchId, preserve relative spacing, slot from now forward
+    if (overdueTasks.length > 0) {
+      rescheduleOverdueTasks(overdueTasks, now);
+    }
+  }
+
+  /**
+   * Reschedules overdue pending tasks forward from now.
+   * Within each batch the original relative time gaps are preserved.
+   * Across batches a minimum 2-min gap is enforced.
+   */
+  function rescheduleOverdueTasks(tasks: TaskRecord[], nowMs: number) {
+    // Group by batchId (tasks without a batch each get their own group)
+    const batchGroups = new Map<string, TaskRecord[]>();
+    for (const task of tasks) {
+      const key = task.batchId ?? task.id;
+      if (!batchGroups.has(key)) batchGroups.set(key, []);
+      batchGroups.get(key)!.push(task);
+    }
+
+    // Sort each group by original scheduledAt so relative order is preserved
+    for (const group of batchGroups.values()) {
+      group.sort((a, b) => {
+        const aMs = a.scheduledAt ? new Date(a.scheduledAt).getTime() : 0;
+        const bMs = b.scheduledAt ? new Date(b.scheduledAt).getTime() : 0;
+        return aMs - bMs;
+      });
+    }
+
+    // Track already-committed future slots (from non-overdue tasks) to avoid collisions
+    const takenSlots: number[] = store
+      .listPendingDispatches()
+      .filter((t) => {
+        const ms = t.scheduledAt ? new Date(t.scheduledAt).getTime() : 0;
+        return ms > nowMs;
+      })
+      .map((t) => new Date(t.scheduledAt!).getTime())
+      .sort((a, b) => a - b);
+
+    // Start cursor slightly ahead so first task doesn't fire in <1s
+    let cursor = nowMs + MIN_DISPATCH_GAP_MS + randomInt(DISPATCH_JITTER_MIN_MS, DISPATCH_JITTER_MAX_MS);
+
+    for (const [, group] of batchGroups) {
+      const originalTimes = group.map((t) =>
+        t.scheduledAt ? new Date(t.scheduledAt).getTime() : nowMs
+      );
+      // Compute relative gaps between tasks (ms between consecutive dispatches)
+      const relativeGaps: number[] = [];
+      for (let i = 1; i < originalTimes.length; i++) {
+        // Preserve the original gap, but floor it at MIN_DISPATCH_GAP_MS
+        relativeGaps.push(Math.max(originalTimes[i] - originalTimes[i - 1], MIN_DISPATCH_GAP_MS + DISPATCH_JITTER_MIN_MS));
+      }
+
+      for (let i = 0; i < group.length; i++) {
+        if (i > 0) {
+          cursor += relativeGaps[i - 1];
+        }
+
+        // Avoid collision with any already-reserved slot
+        let candidate = cursor;
+        for (const taken of takenSlots) {
+          if (Math.abs(candidate - taken) < MIN_DISPATCH_GAP_MS) {
+            candidate = taken + MIN_DISPATCH_GAP_MS + randomInt(DISPATCH_JITTER_MIN_MS, DISPATCH_JITTER_MAX_MS);
+          }
+        }
+        cursor = candidate;
+        takenSlots.push(cursor);
+        takenSlots.sort((a, b) => a - b);
+
+        const newScheduledAt = new Date(cursor).toISOString();
+        const updated = store.postponeTask(group[i].id, newScheduledAt, "pending");
+        if (updated) {
+          io.emit("task:updated", updated);
+          armDispatchTimer(updated);
+        }
+      }
     }
   }
 
