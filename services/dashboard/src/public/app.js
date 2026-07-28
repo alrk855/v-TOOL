@@ -655,27 +655,26 @@ async function fetchAndRenderProxyStats() {
     if (!res.ok) return;
     const data = await res.json();
 
+    const exitIpCountEl = $("uniqueExitIpCount");
     const routeCountEl = $("uniqueProxyRouteCount");
-    const hostCountEl = $("uniqueProxyHostCount");
     const listEl = $("proxyIpUsageList");
 
-    if (routeCountEl) routeCountEl.textContent = data.uniqueRouteIds ?? 0;
-    if (hostCountEl) hostCountEl.textContent = data.uniqueHosts ?? 0;
+    if (exitIpCountEl) exitIpCountEl.textContent = data.uniqueExitIpCount ?? 0;
+    if (routeCountEl) routeCountEl.textContent = data.uniqueRouteCount ?? 0;
 
     if (listEl) {
       const rows = data.rows ?? [];
       if (rows.length === 0) {
-        listEl.innerHTML = `<p class="muted-text">No proxy data yet.</p>`;
+        listEl.innerHTML = `<p class="muted-text">No proxied exit IPs recorded yet.</p>`;
       } else {
-        const maxTasks = Math.max(1, ...rows.map((r) => r.taskCount));
         listEl.innerHTML = rows.map((r) => `
           <div class="failure-row" style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
             <div>
-              <code style="font-size:10px;color:var(--accent-cyan)">${esc(r.proxyRouteId)}</code>
-              <span class="failure-message" style="font-size:10px;color:var(--text-muted)"> — ${esc(r.host)}</span>
+              <code style="font-size:11px;font-weight:700;color:var(--accent-cyan)">${esc(r.ip)}</code>
+              <span class="failure-message" style="font-size:10px;color:var(--text-muted)"> (${esc(r.proxyRouteId)})</span>
             </div>
-            <span style="font-size:11px;color:var(--text-muted)">${r.logCount} exec</span>
-            <span style="font-size:11px;color:var(--accent-ok)">${r.taskCount} tasks</span>
+            <span style="font-size:11px;color:var(--accent-ok);font-weight:600">${r.count} execution${r.count !== 1 ? "s" : ""}</span>
+            <span style="font-size:10px;color:var(--text-muted)">${r.lastUsed ? fmtClock(new Date(r.lastUsed)) : "—"}</span>
           </div>`).join("");
       }
     }
@@ -1506,6 +1505,10 @@ function renderAnalyticsContent(d) {
       <div class="analytics-kpi-card fail">
         <span class="analytics-kpi-num">${d.hardFailedRuns ?? 0}</span>
         <span class="analytics-kpi-label">Hard Failures</span>
+      </div>
+      <div class="analytics-kpi-card" style="border-color:rgba(6,182,212,0.4)">
+        <span class="analytics-kpi-num" style="color:var(--accent-cyan)">${d.uniqueExitIpCount ?? 0}</span>
+        <span class="analytics-kpi-label">Unique Exit IPs Used</span>
       </div>
       <div class="analytics-kpi-card ${rateColor}">
         <span class="analytics-kpi-num">${successRate}%</span>

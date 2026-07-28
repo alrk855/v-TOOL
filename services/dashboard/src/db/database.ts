@@ -366,54 +366,46 @@ export function openDatabase(databasePath: string) {
     },
 
     uniqueProxyStats() {
-      // Unique proxy route IDs used across all non-cancelled tasks
-      const byRouteId = db
-        .prepare(`
-          SELECT
-            proxy_route_id AS proxyRouteId,
-            proxy_json AS proxyJson,
-            COUNT(*) AS taskCount
-          FROM tasks
-          WHERE proxy_route_id IS NOT NULL AND status NOT IN ('cancelled')
-          GROUP BY proxy_route_id
-          ORDER BY taskCount DESC
-        `)
-        .all() as Array<{ proxyRouteId: string; proxyJson: string | null; taskCount: number }>;
+      const logs = db
+        .prepare("SELECT metadata_json, proxy_route_id, created_at FROM execution_logs")
+        .all() as Array<{ metadata_json: string; proxy_route_id: string; created_at: string }>;
 
-      // Unique log-level proxy_route_id usages (executions, not just tasks)
-      const byLogRouteId = db
-        .prepare(`
-          SELECT proxy_route_id AS proxyRouteId, COUNT(*) AS logCount
-          FROM execution_logs
-          WHERE proxy_route_id IS NOT NULL AND proxy_route_id != ''
-          GROUP BY proxy_route_id
-          ORDER BY logCount DESC
-        `)
-        .all() as Array<{ proxyRouteId: string; logCount: number }>;
+      const ipMap = new Map<string, { ip: string; count: number; lastUsed: string; proxyRouteId: string }>();
+      const routeIds = new Set<string>();
 
-      const logCountMap = new Map(byLogRouteId.map((r) => [r.proxyRouteId, r.logCount]));
-
-      const rows = byRouteId.map((r) => {
-        let host = "—";
+      for (const log of logs) {
+        if (log.proxy_route_id) routeIds.add(log.proxy_route_id);
         try {
-          const parsed = r.proxyJson ? JSON.parse(r.proxyJson) : null;
-          if (parsed?.server) {
-            // Extract just the host:port, strip the protocol
-            host = parsed.server.replace(/^https?:\/\//, "");
+          const meta = JSON.parse(log.metadata_json);
+          const ip = meta?.routedIp ?? meta?.hostIp;
+          if (ip && typeof ip === "string" && ip !== "dev-local" && ip !== "cdp-real-chrome" && !ip.startsWith("cdp-")) {
+            const existing = ipMap.get(ip);
+            if (existing) {
+              existing.count++;
+              if (log.created_at > existing.lastUsed) existing.lastUsed = log.created_at;
+            } else {
+              ipMap.set(ip, {
+                ip,
+                count: 1,
+                lastUsed: log.created_at,
+                proxyRouteId: log.proxy_route_id || "none"
+              });
+            }
           }
-        } catch { /* ignore */ }
-        return {
-          proxyRouteId: r.proxyRouteId,
-          host,
-          taskCount: r.taskCount,
-          logCount: logCountMap.get(r.proxyRouteId) ?? 0
-        };
-      });
+        } catch {
+          // ignore
+        }
+      }
 
-      const uniqueRouteIds = new Set(rows.map((r) => r.proxyRouteId)).size;
-      const uniqueHosts = new Set(rows.map((r) => r.host).filter((h) => h !== "—")).size;
+      const rows = Array.from(ipMap.values()).sort((a, b) => b.count - a.count);
+      const uniqueExitIpCount = rows.length;
+      const uniqueRouteCount = routeIds.size;
 
-      return { uniqueRouteIds, uniqueHosts, rows };
+      return {
+        uniqueExitIpCount,
+        uniqueRouteCount,
+        rows
+      };
     }
   };
 }
@@ -592,6 +584,7 @@ function buildDetailedAnalytics(db: DatabaseSync, filter?: AnalyticsFilter) {
   };
 
   const proxyStatsMap = new Map<string, { proxyRouteId: string; total: number; clicks: number; timeouts: number; fails: number }>();
+  const uniqueExitIpsSet = new Set<string>();
 
   for (const row of rows) {
     const dateObj = new Date(row.created_at);
@@ -616,6 +609,10 @@ function buildDetailedAnalytics(db: DatabaseSync, filter?: AnalyticsFilter) {
     hourlyStats[hour].totalRuns++;
 
     const metadata = parseMetadata(row.metadata_json);
+    const routedIp = (metadata?.routedIp ?? metadata?.hostIp) as string | undefined;
+    if (routedIp && typeof routedIp === "string" && routedIp !== "dev-local" && routedIp !== "cdp-real-chrome" && !routedIp.startsWith("cdp-")) {
+      uniqueExitIpsSet.add(routedIp);
+    }
     const msg = (row.message ?? "").toLowerCase();
     const isTimeout = row.status_code === "failed" && (
       msg.includes("timed out") ||
@@ -703,6 +700,7 @@ function buildDetailedAnalytics(db: DatabaseSync, filter?: AnalyticsFilter) {
     effectiveCompletedRuns,
     effectiveSuccessRate: totalRuns > 0 ? Math.round((effectiveCompletedRuns / totalRuns) * 100) : 0,
     totalCommitClicks,
+    uniqueExitIpCount: uniqueExitIpsSet.size,
     workflowSteps,
     dailySeries,
     hourlyStats,
