@@ -135,7 +135,7 @@ function isApiPath(pathname: string) {
 
 function isRunnerPath(pathname: string) {
   return (
-    pathname === "/api/runner/claim" ||
+    pathname.startsWith("/api/runner/") ||
     pathname === "/api/execution-logs" ||
     /^\/api\/tasks\/[^/]+\/status$/.test(pathname)
   );

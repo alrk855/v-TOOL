@@ -10,7 +10,7 @@ import {
 } from "playwright";
 import { pickFootprint } from "./agentProfiles.js";
 import { config } from "./config.js";
-import { logExecution, updateTaskStatus } from "./dashboardClient.js";
+import { checkIpUsage, logExecution, rescheduleTask, updateTaskStatus } from "./dashboardClient.js";
 import type { AgentFootprint, ProxyRoute, TaskRecord, WorkflowConfig } from "./types.js";
 
 class CriticalIsolationError extends Error {
@@ -72,13 +72,18 @@ export async function executeTask(task: TaskRecord) {
           if (spacingMs > 0) {
             await delay(withJitter(index * spacingMs, 0.3));
           }
-          await executeThread(task, index, browser!, cdpConnected);
+          return await executeThread(task, index, browser!, cdpConnected);
         })
       )
     );
 
-    const failed = results.filter((result) => result.status === "rejected").length;
-    await updateTaskStatus(task.id, failed === task.totalExecutions ? "failed" : "completed");
+    const threadOutputs = results.map((r) => (r.status === "fulfilled" ? r.value : null));
+    const wasRescheduled = threadOutputs.some((out) => out?.rescheduled === true);
+
+    if (!wasRescheduled) {
+      const failed = results.filter((result) => result.status === "rejected").length;
+      await updateTaskStatus(task.id, failed === task.totalExecutions ? "failed" : "completed");
+    }
   } catch (error) {
     console.error(`executeTask launch/connection failed for task ${task.id}:`, error);
     await updateTaskStatus(task.id, "failed");
@@ -144,6 +149,48 @@ async function executeThread(task: TaskRecord, index: number, browser: Browser, 
     const isolation = isCdp
       ? { hostIp: "cdp-real-chrome", routedIp: "cdp-real-chrome" }
       : await verifyNetworkIsolation(context, proxyRoute);
+
+    // IP Overuse Guard: Check if exit IP has been used >= 6 times already
+    if (
+      isolation.routedIp &&
+      isolation.routedIp !== "dev-local" &&
+      isolation.routedIp !== "cdp-real-chrome" &&
+      !isolation.routedIp.startsWith("cdp-")
+    ) {
+      const ipCheck = await checkIpUsage(isolation.routedIp);
+      if (ipCheck.exceeded) {
+        console.warn(
+          `[IP OVERUSE GUARD] Exit IP ${isolation.routedIp} has been used ${ipCheck.usageCount} times (limit 6). Rescheduling task ${task.id} for later.`
+        );
+
+        await logExecution({
+          taskId: task.id,
+          threadId,
+          statusCode: "rescheduled",
+          message: `Exit IP ${isolation.routedIp} used ${ipCheck.usageCount} times (limit 6). Task rescheduled for later.`,
+          userAgent: footprint.userAgent,
+          locale,
+          region,
+          timezoneId: footprint.timezoneId,
+          viewportWidth: footprint.viewport.width,
+          viewportHeight: footprint.viewport.height,
+          deviceScaleFactor: footprint.deviceScaleFactor,
+          proxyRouteId: proxyRoute.id,
+          durationMs: Date.now() - started,
+          metadata: {
+            ipOverused: true,
+            exitIp: isolation.routedIp,
+            usageCount: ipCheck.usageCount,
+            maxAllowed: ipCheck.maxAllowed
+          }
+        });
+
+        // Reschedule task 15 to 30 minutes into the future
+        const delayMins = Math.floor(15 + Math.random() * 15);
+        await rescheduleTask(task.id, delayMins);
+        return { rescheduled: true, reason: "ip_overused" };
+      }
+    }
 
     const localization = isCdp
       ? { language: locale, timezone: footprint.timezoneId }

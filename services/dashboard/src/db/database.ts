@@ -340,6 +340,41 @@ export function openDatabase(databasePath: string) {
       return row.cnt;
     },
 
+    getIpUsageCount(ip: string): number {
+      if (!ip || ip === "dev-local" || ip === "cdp-real-chrome" || ip.startsWith("cdp-")) {
+        return 0;
+      }
+      try {
+        const row = db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM execution_logs
+             WHERE json_extract(metadata_json, '$.routedIp') = @ip
+                OR json_extract(metadata_json, '$.hostIp') = @ip`
+          )
+          .get({ ip }) as unknown as { count: number } | undefined;
+        return row?.count ?? 0;
+      } catch {
+        return 0;
+      }
+    },
+
+    rescheduleOverusedTask(id: string, delayMinutes: number = 20): TaskRecord | null {
+      const jitterMs = Math.floor(Math.random() * 5 * 60 * 1000);
+      const nextScheduledAt = new Date(Date.now() + delayMinutes * 60 * 1000 + jitterMs).toISOString();
+      const now = new Date().toISOString();
+      db.prepare(`
+        UPDATE tasks
+        SET status = 'pending', scheduled_at = @scheduledAt, started_at = NULL, completed_at = NULL, updated_at = @now
+        WHERE id = @id AND status IN ('running', 'queued', 'pending')
+      `).run({
+        scheduledAt: nextScheduledAt,
+        now,
+        id
+      });
+      return this.getTask(id);
+    },
+
     stats() {
       const taskCounts = db
         .prepare("SELECT status, COUNT(*) AS count FROM tasks GROUP BY status")

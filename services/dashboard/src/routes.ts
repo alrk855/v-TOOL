@@ -204,6 +204,37 @@ export function createRouter(store: Store, io: Server, scheduler: Scheduler) {
     res.json({ task });
   });
 
+  router.get("/api/runner/check-ip-usage", (req, res) => {
+    const ip = typeof req.query.ip === "string" ? req.query.ip.trim() : "";
+    const usageCount = store.getIpUsageCount(ip);
+    const maxAllowed = 6;
+    res.json({
+      ip,
+      usageCount,
+      maxAllowed,
+      exceeded: usageCount >= maxAllowed
+    });
+  });
+
+  router.post("/api/runner/reschedule-task", (req, res) => {
+    const taskId = typeof req.body?.taskId === "string" ? req.body.taskId : undefined;
+    const delayMinutes = typeof req.body?.delayMinutes === "number" ? req.body.delayMinutes : 20;
+
+    if (!taskId) {
+      res.status(400).json({ error: "taskId is required" });
+      return;
+    }
+
+    const task = store.rescheduleOverusedTask(taskId, delayMinutes);
+    if (!task) {
+      res.status(404).json({ error: "Task not found" });
+      return;
+    }
+
+    io.emit("task:updated", task);
+    res.json({ ok: true, task });
+  });
+
   router.post("/api/tasks/:id/status", (req, res) => {
     const status = z.enum(["pending", "queued", "running", "completed", "failed", "cancelled"]).safeParse(req.body.status);
     if (!status.success) {
