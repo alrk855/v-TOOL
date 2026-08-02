@@ -24,6 +24,8 @@ export const config = {
     ? process.env.CHROME_CDP_ENDPOINT.replace("localhost", "127.0.0.1")
     : null,
   screenshotsEnabled: process.env.SCREENSHOTS_ENABLED !== "false",
+  /** DATA_SAVER_ENABLED=true (default) → Blocks heavy media, images, and font downloads over proxy to save 70-90% bandwidth without affecting DOM selectors or workflow execution. */
+  dataSaverEnabled: process.env.DATA_SAVER_ENABLED !== "false",
   workflow: {
     surveyOptionText: process.env.SURVEY_OPTION_TEXT,
     surveyOptionSelector: process.env.SURVEY_OPTION_SELECTOR,

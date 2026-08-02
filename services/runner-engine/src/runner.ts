@@ -49,7 +49,11 @@ export async function executeTask(task: TaskRecord) {
           args: [
             "--disable-blink-features=AutomationControlled",
             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-            "--webrtc-ip-handling-policy=disable_non_proxied_udp"
+            "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+            "--disable-remote-fonts",
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-sync"
           ]
         });
       }
@@ -61,7 +65,11 @@ export async function executeTask(task: TaskRecord) {
         args: [
           "--disable-blink-features=AutomationControlled",
           "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-          "--webrtc-ip-handling-policy=disable_non_proxied_udp"
+          "--webrtc-ip-handling-policy=disable_non_proxied_udp",
+          "--disable-remote-fonts",
+          "--disable-background-networking",
+          "--disable-component-update",
+          "--disable-sync"
         ]
       });
     }
@@ -197,6 +205,20 @@ async function executeThread(task: TaskRecord, index: number, browser: Browser, 
       : await verifyContextLocalization(context, footprint, locale);
 
     page = await context.newPage();
+
+    // Data saver: block heavy resource types that are not needed for DOM interaction
+    if (config.dataSaverEnabled) {
+      await page.route("**/*", (route) => {
+        const type = route.request().resourceType();
+        // Allow document, script, xhr, fetch, stylesheet (needed for layout/selectors)
+        // Block images, media, fonts, websocket, manifest, other background traffic
+        if (["image", "media", "font", "websocket", "manifest", "other"].includes(type)) {
+          route.abort("blockedbyclient").catch(() => {});
+        } else {
+          route.continue().catch(() => {});
+        }
+      });
+    }
 
     await installPrivacyPreservingInitScript(page, footprint);
     await humanDelay(600, 1400);
